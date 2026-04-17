@@ -32,7 +32,8 @@ const (
     // pricingAPITimeout is the maximum time allowed for a single
     // request to the instances.vantage.sh pricing API.
     pricingAPITimeout = 10 * time.Second
-
+)
+var (
     // pricingAPIBaseURL is the instances.vantage.sh endpoint used
     // for AWS on-demand pricing lookups.
     pricingAPIBaseURL = "https://instances.vantage.sh/aws/pricing/"
