@@ -2,25 +2,24 @@ package ovh
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
+	exeggutor "github.com/andreimerlescu/sovereign/pkg/terraform_exeggutor"
 )
 
+// resourceType is the terraform resource type that ParseStatus searches
+// for to determine whether an OVH OpenStack compute instance has been
+// provisioned.
+const resourceType = "openstack_compute_instance_v2"
+
 // TerraformProviderOVH implements tfprovider.TerraformProvider for
-// OVH Public Cloud using the OpenStack compute API.
-//
-// OVH exposes OpenStack-compatible APIs for its public cloud compute
-// resources. Terraform uses two providers together -- ovh/ovh for
-// OVH-specific resources and openstack for compute instances.
-//
+// OVHcloud Public Cloud using the OpenStack compute API.
 // The struct is stateless with respect to individual planets. All
 // per-planet data flows through PlanetSpec and HCLSpec arguments.
 // Credentials are resolved once at construction and stored here.
@@ -49,10 +48,7 @@ func (p *TerraformProviderOVH) Validate() error {
 	if p.creds.ApplicationKey == "" {
 		return fmt.Errorf("ovh: credentials not resolved -- call New()")
 	}
-	if _, err := exec.LookPath("terraform"); err != nil {
-		return fmt.Errorf("ovh: terraform binary not found in PATH")
-	}
-	return nil
+	return exeggutor.Validate()
 }
 
 // RenderHCL renders all HCL files for the planet described by spec
@@ -63,128 +59,45 @@ func (p *TerraformProviderOVH) RenderHCL(spec tfprovider.HCLSpec) error {
 
 // Init runs terraform init in the planet's terraform directory.
 func (p *TerraformProviderOVH) Init(ctx context.Context, spec tfprovider.PlanetSpec) error {
-	return p.tf(ctx, spec, "init", "-no-color")
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).Init(ctx)
 }
 
-// InitOrApply runs terraform init if the .terraform directory does not
-// exist, then runs apply. Safe to call on an already-initialized planet.
+// InitOrApply runs terraform init if not already initialized then apply.
 func (p *TerraformProviderOVH) InitOrApply(ctx context.Context, spec tfprovider.PlanetSpec) error {
-	dotTerraform := filepath.Join(spec.WorkDir, "terraform", ".terraform")
-	if _, err := os.Stat(dotTerraform); os.IsNotExist(err) {
-		if err := p.Init(ctx, spec); err != nil {
-			return err
-		}
-	}
-	return p.Apply(ctx, spec)
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).InitOrApply(ctx)
 }
 
 // Apply runs terraform apply in the planet's terraform directory.
 func (p *TerraformProviderOVH) Apply(ctx context.Context, spec tfprovider.PlanetSpec) error {
-	return p.tf(ctx, spec, "apply", "-auto-approve", "-no-color")
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).Apply(ctx)
 }
 
 // Destroy runs terraform destroy in the planet's terraform directory.
 func (p *TerraformProviderOVH) Destroy(ctx context.Context, spec tfprovider.PlanetSpec) error {
-	return p.tf(ctx, spec, "destroy", "-auto-approve", "-no-color")
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).Destroy(ctx)
 }
 
-// Output runs terraform output -json and parses the result into
-// a ProvisionOutput. Returns an error if any expected output is missing.
+// Output runs terraform output -json and parses instance_id,
+// public_ipv4, private_ipv4 into a ProvisionOutput.
 func (p *TerraformProviderOVH) Output(ctx context.Context, spec tfprovider.PlanetSpec) (*tfprovider.ProvisionOutput, error) {
-	terraformDir := filepath.Join(spec.WorkDir, "terraform")
-	cmd := exec.CommandContext(ctx, "terraform", "output", "-json", "-no-color")
-	cmd.Dir = terraformDir
-	cmd.Env = p.env()
-
-	out, err := cmd.Output()
+	exe := exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env())
+	result, err := exe.ParseOutput(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("ovh: terraform output planet %d: %w",
-			spec.PlanetID, err)
+		return nil, err
 	}
-
-	var raw map[string]struct {
-		Value string `json:"value"`
-	}
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("ovh: parse terraform output planet %d: %w",
-			spec.PlanetID, err)
-	}
-
-	result := &tfprovider.ProvisionOutput{
-		Region: spec.Region,
-		Zone:   spec.Zone,
-	}
-
-	var missing []string
-	if v, ok := raw["instance_id"]; ok {
-		result.InstanceID = v.Value
-		result.ProviderRef = v.Value
-	} else {
-		missing = append(missing, "instance_id")
-	}
-	if v, ok := raw["public_ipv4"]; ok {
-		result.PublicIPv4 = v.Value
-	} else {
-		missing = append(missing, "public_ipv4")
-	}
-	if v, ok := raw["private_ipv4"]; ok {
-		result.PrivateIPv4 = v.Value
-	} else {
-		missing = append(missing, "private_ipv4")
-	}
-
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("ovh: missing terraform outputs for planet %d: %v",
-			spec.PlanetID, missing)
-	}
-
-	return result, nil
+	return &tfprovider.ProvisionOutput{
+		InstanceID:  result.InstanceID,
+		PublicIPv4:  result.PublicIPv4,
+		PrivateIPv4: result.PrivateIPv4,
+		Region:      spec.Region,
+		Zone:        spec.Zone,
+		ProviderRef: result.InstanceID,
+	}, nil
 }
 
-// Status runs terraform show -json and reports the current lifecycle
-// status of the planet's managed instance resource.
+// Status checks the current terraform lifecycle status for the planet.
 func (p *TerraformProviderOVH) Status(ctx context.Context, spec tfprovider.PlanetSpec) (tfprovider.LifecycleStatus, error) {
-	stateFile := filepath.Join(spec.WorkDir, "terraform", "terraform.tfstate")
-	if _, err := os.Stat(stateFile); os.IsNotExist(err) {
-		return tfprovider.LifecycleUninitialized, nil
-	}
-
-	terraformDir := filepath.Join(spec.WorkDir, "terraform")
-	cmd := exec.CommandContext(ctx, "terraform", "show", "-json", "-no-color")
-	cmd.Dir = terraformDir
-	cmd.Env = p.env()
-
-	out, err := cmd.Output()
-	if err != nil {
-		return tfprovider.LifecycleFailed,
-			fmt.Errorf("ovh: terraform show planet %d: %w", spec.PlanetID, err)
-	}
-
-	var state struct {
-		Values struct {
-			RootModule struct {
-				Resources []struct {
-					Type   string `json:"type"`
-					Values struct {
-						ID string `json:"id"`
-					} `json:"values"`
-				} `json:"resources"`
-			} `json:"root_module"`
-		} `json:"values"`
-	}
-
-	if err := json.Unmarshal(out, &state); err != nil {
-		return tfprovider.LifecycleFailed,
-			fmt.Errorf("ovh: parse terraform show planet %d: %w", spec.PlanetID, err)
-	}
-
-	for _, r := range state.Values.RootModule.Resources {
-		if r.Type == "openstack_compute_instance_v2" && r.Values.ID != "" {
-			return tfprovider.LifecycleApplied, nil
-		}
-	}
-
-	return tfprovider.LifecycleUninitialized, nil
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).ParseStatus(ctx, resourceType)
 }
 
 // StateBackend returns the local terraform state file path for this planet.
@@ -228,28 +141,12 @@ func (p *TerraformProviderOVH) SaveState(spec tfprovider.PlanetSpec, state *tfpr
 	return nil
 }
 
-// UnloadState is a no-op. TerraformProviderOVH is stateless -- there
-// is no in-memory per-planet state to clear.
+// UnloadState is a no-op. TerraformProviderOVH is stateless.
 func (p *TerraformProviderOVH) UnloadState(_ tfprovider.PlanetSpec) error {
 	return nil
 }
 
 // -- private helpers ---------------------------------------------------------
-
-// tf runs a terraform subcommand in the planet's terraform directory.
-func (p *TerraformProviderOVH) tf(ctx context.Context, spec tfprovider.PlanetSpec, args ...string) error {
-	terraformDir := filepath.Join(spec.WorkDir, "terraform")
-	cmd := exec.CommandContext(ctx, "terraform", args...)
-	cmd.Dir = terraformDir
-	cmd.Env = p.env()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ovh: terraform %s planet %d: %w",
-			args[0], spec.PlanetID, err)
-	}
-	return nil
-}
 
 // env returns the environment for terraform subprocess calls.
 // All credentials are passed as environment variables so they
