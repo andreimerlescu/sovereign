@@ -1,16 +1,16 @@
 # Sovereign
 
 > The command center for distributed lemmings load testing.
-> Sovereign schedules terrain, deploys agents, collects results,
+> Sovereign provisions terrain, deploys agents, collects results,
 > and renders unified reports across geographic origins.
 
 ---
 
 ## What Sovereign Is
 
-Sovereign is the engineer's command center. It sits above both
-lemmings and topobuilder and coordinates them to execute
-distributed load tests that no single machine can perform alone.
+Sovereign is the engineer's command center. It sits above lemmings
+and coordinates distributed load tests that no single machine can
+perform alone.
 
 A single lemmings instance tells you how your application performs
 under load from one origin. Sovereign tells you how your application
@@ -18,43 +18,18 @@ performs under load from every origin simultaneously -- multiple
 regions, multiple cloud providers, hundreds of thousands of lemmings
 running concurrently across the globe -- with a single command.
 
-Sovereign does not run lemmings. It does not build infrastructure.
-It commands the tools that do. It is the sovereign. lemmings are
-its agents. topobuilder is its terrain builder. The engineer is
-the one who decides when and where the lemmings run.
+Sovereign provisions cloud infrastructure directly via Terraform. It
+does not depend on topobuilder. It installs lemmings on each planet,
+runs the load test, collects results, and destroys the infrastructure
+when done.
 
 ---
 
-## The Three Applications
-
-Understanding sovereign requires understanding where it sits in
-relation to the other two applications.
-
-lemmings is the agent. It runs on a single machine, follows a
-plan, produces a LifeLog, and reports back. It knows nothing
-about planets, infrastructure, or other lemmings instances running
-elsewhere in the world.
-
-topobuilder is the terrain builder. It spins up cloud instances
-across geographic regions, installs software on them, and tears
-them down when instructed. It knows nothing about lemmings
-specifically until the lemmings fork adds ProvisionerLemmings.
-
-sovereign is the command center. It knows about both. It is the
-only application in the system that understands the full picture --
-how many planets to create, what lemmings configuration each planet
-receives, how to wait for all planets to finish, how to collect and
-merge LifeLogs from distributed sources, when to trigger terrain
-destruction, and what the unified final report looks like across
-all planets.
-
----
-
-## The Relationship
+## How It Works
 
     sovereign
         |
-        |-- topobuilder (creates terrain)
+        |-- terraform (creates terrain per planet)
         |       |
         |       |-- planet 1 -- lemmings (us-east-1)
         |       |-- planet 2 -- lemmings (us-west-1)
@@ -62,145 +37,163 @@ all planets.
         |       |-- planet 4 -- lemmings (ap-southeast-1)
         |       |-- planet 5 -- lemmings (sa-east-1)
         |
-        |-- waits for all planets to report
+        |-- waits for all planets to complete
         |
         |-- collects LifeLogs via SCP
         |
         |-- aggregates into unified report
         |
-        |-- triggers topobuilder destroy
+        |-- terraform destroy (per planet, concurrent)
 
 lemmings never knows sovereign exists.
-topobuilder never knows lemmings exists until the fork.
 sovereign knows everything.
 
 ---
 
-## What Sovereign Does
+## The Lifecycle
 
-### 1. Render the terrain configuration
+### 1. Cost Estimation
 
-Sovereign reads its own YAML configuration and renders a
-topobuilder-compatible YAML file for the requested number of
-planets. It knows which cloud providers to target, which regions
-to use, what instance types to provision, and what SSH keys to use.
+Before provisioning any infrastructure, sovereign queries
+instances.vantage.sh for current AWS on-demand pricing for each
+planet's region and instance type. The estimate is printed and
+confirmation is requested before any infrastructure is created.
+The --yes flag skips confirmation for automated pipelines.
+The --dry-run flag exits after the estimate without provisioning.
 
-### 2. Schedule terrain creation
+### 2. Terrain Provisioning
 
-Sovereign calls topobuilder with the rendered configuration.
-topobuilder provisions the instances, installs Go, installs
-lemmings via ProvisionerLemmings, and copies the lemmings plan
-file to each planet.
+Sovereign generates Terraform HCL for each planet and calls
+terraform init and terraform apply. The first planet provisions
+alone. Remaining planets provision in concurrent batches of 3.
+A planet that fails to provision is marked lost and skipped in
+subsequent phases. Lost planets are noted in the final report.
+The run continues with surviving planets.
 
-### 3. Distribute lemmings configurations
+Each planet gets its own working directory:
 
-Each planet receives its own lemmings configuration tailored to
-its terrain -- the target URL, the pack size, the terrain count,
-the until duration, the ramp, and the plan file. Sovereign manages
-the per-planet configuration generation so that the aggregate load
-across all planets matches the engineer's intent.
+    ~/.sovereignd/planets/planet-N/terraform/
 
-### 4. Wait for completion
+Terraform state is local per planet. After every successful apply
+the HCL files are backed up to a timestamped directory so the exact
+terraform that provisioned each instance is never lost.
 
-Sovereign monitors each planet. The default planet timeout is
-five minutes to provision and five minutes to terminate. If a
-planet fails to provision within the timeout, sovereign marks
-it as lost, logs the failure, and continues with the remaining
-planets. A lost planet is noted in the final report. Manual
-intervention is flagged when termination cannot complete within
-the timeout.
+### 3. Lemmings Deployment
 
-### 5. Collect LifeLogs
+Sovereign SSHes into each planet and runs lemmings with the
+configured flags. If a plan file is provided it is SCPed to the
+planet before lemmings starts. Lemmings runs block until completion
+or the deadline (ramp + until + 5 minutes overhead) is exceeded.
 
-When each planet completes its lemmings run, sovereign collects
-the LifeLog and report files via SCP. Collection happens per
-planet as each one completes rather than waiting for all planets
-to finish -- a slow planet does not delay collection from fast
-ones.
+### 4. Result Collection
 
-### 6. Aggregate results
+When each planet completes its lemmings run, sovereign SCPs the
+report files back to the planet's local reports directory. Collection
+runs concurrently across all non-lost planets. A collection failure
+marks the planet lost but does not block collection from others.
 
-Sovereign merges the LifeLogs from all planets into a unified
-ledger. The unified report shows:
+### 5. Report Aggregation
+
+Sovereign reads the lemmings YAML report from each completed planet,
+merges all results into a unified report, and delivers it to all
+configured save-to destinations as both markdown and HTML.
+
+The unified report includes:
 
     -- Total visits across all planets and all terrains
     -- Per-planet breakdown showing geographic performance differences
     -- Per-path breakdown aggregated globally
-    -- Timing percentiles at the global, per-planet, and per-path level
+    -- Timing percentiles at global, per-planet, and per-path level
     -- Waiting room metrics aggregated across all origins
-    -- Lost planet summary with failure reasons
-    -- Projected cost of the run based on instance hours consumed
+    -- Lost planet summary with instance IDs for manual intervention
+    -- Projected cost based on instance hours consumed
 
-### 7. Destroy terrain
+### 6. Terrain Destruction
 
-Once all planets have reported and all LifeLogs have been collected,
-sovereign triggers topobuilder destroy. Destroy runs per-planet
-concurrently. Sovereign waits for confirmation that all instances
-have been terminated before exiting. If any planet fails to
-terminate within the timeout, sovereign logs the instance IDs
-that require manual intervention and exits with a non-zero status.
-
----
-
-## Remote Terrain Constraint
-
-Sovereign enforces the remote terrain constraint before calling
-topobuilder. Only the web lemmings engine is permitted on remote
-planets. Database, NoSQL, and CDN lemmings require direct network
-access to internal infrastructure that randomly provisioned cloud
-instances will not have.
-
-If a sovereign configuration specifies a non-web engine alongside
-a planet count greater than zero, sovereign exits with a clear
-error before any infrastructure is created:
-
-    sovereign: engine "sql" does not support remote terrain
-    sovereign: remove -planets or switch to the web engine
+All planets are destroyed concurrently via terraform destroy. Sovereign
+waits for confirmation that all instances have been terminated before
+exiting. If any planet fails to terminate within the timeout, sovereign
+logs the instance IDs that require manual intervention in AWS and exits
+with a non-zero status.
 
 ---
 
-## Cost Estimation
+## State and Resume
 
-Before provisioning any infrastructure, sovereign calculates the
-projected cost of the run using the instances.vantage.sh API to
-look up current spot and on-demand pricing for the requested
-instance types in each region.
+Sovereign writes two kinds of state to survive crashes and restarts.
 
-The estimate includes:
+The sovereign state file records the planet slice with instance IDs:
 
-    -- Per-planet instance cost based on instance type and region
-    -- Estimated run duration based on ramp + until + collection overhead
-    -- Total projected cost across all planets
-    -- Spot vs on-demand pricing comparison where available
-
-Sovereign prints the cost estimate and waits for confirmation
-before provisioning. The --yes flag skips confirmation for
-automated pipelines.
-
----
-
-## State Persistence
-
-Sovereign writes state to a hidden directory to survive crashes
-and restarts without duplicating cloud resources.
-
-On startup, sovereign checks for an existing state file in this
-order:
-
-    ./.sovereignd/state.yml
     ~/.sovereignd/state.yml
 
-If a state file exists and contains active planet information,
-sovereign loads that state and resumes from where it left off
-rather than provisioning new instances. This means a crash during
-a long run does not result in orphaned infrastructure -- sovereign
-reconnects to the existing planets and continues collection.
+The provider state file records the terraform lifecycle status per planet:
+
+    ~/.sovereignd/planets/planet-N/provider_state.yml
+
+The ledger is an append-only audit log of every lifecycle event:
+
+    ~/.sovereignd/runs/<timestamp>/ledger.yml
+
+On restart, sovereign reads the ledger to determine what each planet
+has already accomplished and routes accordingly:
+
+    Planet with collect complete event  -- skip entirely
+    Planet with provision complete event -- resume from lemmings phase
+    Planet with interrupted apply        -- resume with terraform apply
+    Planet with no usable state          -- provision from scratch
+
+This means a crash at any point in the run does not orphan AWS
+infrastructure and does not duplicate work that already succeeded.
+
+---
+
+## Cloud Providers
+
+Sovereign uses a TerraformProvider interface. Each cloud provider
+generates its own Terraform HCL and implements the same lifecycle
+contract. The provider is selected via the --provider flag.
+
+Currently implemented:
+
+    aws          -- fully implemented
+
+Stubbed (not yet implemented):
+
+    digitalocean
+    gcp
+    oci
+    ovh
 
 ---
 
 ## Quick Start
 
+Install sovereign:
+
     go install github.com/andreimerlescu/sovereign@latest
+
+Ensure terraform is in PATH:
+
+    terraform -version
+
+Set required environment variables:
+
+    export AWS_ACCESS_KEY=...
+    export AWS_ACCESS_SECRET_KEY=...
+    export SOVEREIGN_SUBNET_ID=subnet-...
+    export SOVEREIGN_SECURITY_GROUP=sg-...
+
+Estimate cost without provisioning:
+
+    sovereign \
+        --hit https://myapp.com \
+        --planets 5 \
+        --terrain 50 \
+        --pack 50 \
+        --until 30s \
+        --ramp 5m \
+        --instance c6a.large \
+        --dry-run
 
 Run a distributed load test across five planets:
 
@@ -211,7 +204,7 @@ Run a distributed load test across five planets:
         --pack 50 \
         --until 30s \
         --ramp 5m \
-        --provider digitalocean \
+        --instance c6a.large \
         --save-to .
 
 Run with a plan file across three planets:
@@ -223,18 +216,8 @@ Run with a plan file across three planets:
         --pack 20 \
         --until 30s \
         --plan lemmings.plan.yml \
-        --provider aws \
-        --save-to s3://my-bucket/sovereign-reports
-
-Dry run -- estimate cost without provisioning:
-
-    sovereign \
-        --hit https://myapp.com \
-        --planets 5 \
-        --terrain 50 \
-        --pack 50 \
-        --until 30s \
-        --dry-run
+        --instance c6a.large \
+        --save-to /tmp/sovereign-reports
 
 ---
 
@@ -242,32 +225,50 @@ Dry run -- estimate cost without provisioning:
 
 ### Core
 
-    --hit          Target URL for lemmings to load test
-    --planets      Number of cloud instances to provision
-    --terrain      Number of terrain groups per planet
-    --pack         Number of lemmings per terrain per planet
-    --until        How long each lemming lives
-    --ramp         Duration to bring all terrains online per planet
-    --plan         Path to a lemmings plan YAML file
-    --max-plan-items  Maximum plan items (default 999)
+    --hit, -h              Target URL for lemmings to load test
+    --planets, -p          Number of cloud instances to provision
+    --terrain, -t          Number of terrain groups per planet
+    --pack, -pk            Number of lemmings per terrain per planet
+    --until, -u            How long each lemming lives
+    --ramp, -r             Duration to bring all terrains online per planet
+    --plan, -pl            Path to a lemmings plan YAML file
+    --save-to, -s          Report delivery destinations
 
 ### Infrastructure
 
-    --provider     Cloud provider: digitalocean, aws, gcp, azure
-    --region       Comma-separated list of regions to deploy into
-    --instance     Instance type per planet (default: provider minimum)
-    --yes          Skip cost confirmation prompt
-    --dry-run      Estimate cost and exit without provisioning
+    --provider, -pv        Cloud provider: aws (default)
+    --region, -rg          AWS regions to deploy into (repeatable)
+    --instance, -i         Instance type per planet -- REQUIRED
+    --yes, -y              Skip cost confirmation prompt
+    --dry-run, -dr         Estimate cost and exit without provisioning
+    --provision-timeout    Maximum time to provision one planet (default 5m)
+    --terminate-timeout    Maximum time to terminate one planet (default 5m)
 
-### Timeouts
+### Remote Instance
 
-    --provision-timeout   Maximum time to provision one planet (default 5m)
-    --terminate-timeout   Maximum time to terminate one planet (default 5m)
+    --remote-user, -ru     SSH user on provisioned instances (default: rocky)
 
-### Report Delivery
+### AMI
 
-    --save-to      Comma-separated delivery destinations matching
-                   lemmings save-to format -- local path, s3://, mailto:
+    --ami-os, -ao          AMI OS search pattern (default: Rocky-9-EC2-Base-9.*-x86_64*)
+    --ami-owners, -aw      AMI owners account ID (default: 792107900819)
+
+### Go and Lemmings
+
+    --go-version, -gv      Go version to install via igo (default: 1.25.0)
+    --lemmings-package     Lemmings package path for go install
+                           (default: github.com/andreimerlescu/lemmings@latest)
+
+### EBS Volumes
+
+    --root-volume-size     Root EBS volume size in GB (default: 30)
+    --root-volume-type     Root EBS volume type: gp2, gp3, io2 (default: gp2)
+    --temp-volume-size     Temp EBS volume size in GB (default: 10)
+    --temp-volume-type     Temp EBS volume type: gp2, gp3, io2 (default: gp2)
+
+### Config File
+
+    --config, -c           Path to a sovereign YAML config file
 
 ---
 
@@ -275,7 +276,7 @@ Dry run -- estimate cost without provisioning:
 
 For repeatable runs, sovereign accepts a YAML configuration file
 via --config. All flags can be expressed in the config file.
-Flags override config file values when both are present.
+Flags always override config file values when both are present.
 
     sovereign --config sovereign.yml
 
@@ -289,13 +290,27 @@ Example sovereign.yml:
     Ramp: 5m
     Plan: lemmings.plan.yml
 
-    Provider: digitalocean
+    Provider: aws
     Regions:
-      - nyc3
-      - sfo3
-      - ams3
-      - sgp1
-      - lon1
+      - us-east-1
+      - us-west-1
+      - eu-west-1
+      - ap-southeast-1
+      - sa-east-1
+
+    InstanceType: c6a.large
+
+    RemoteUser: rocky
+    AMIOS: "Rocky-9-EC2-Base-9.*-x86_64*"
+    AMIOwners: "792107900819"
+
+    GoVersion: "1.25.0"
+    LemmingsPackage: "github.com/andreimerlescu/lemmings@latest"
+
+    RootVolumeSize: 30
+    RootVolumeType: gp2
+    TempVolumeSize: 10
+    TempVolumeType: gp2
 
     ProvisionTimeout: 5m
     TerminateTimeout: 5m
@@ -306,11 +321,56 @@ Example sovereign.yml:
 
 ---
 
+## Environment Variables
+
+Required:
+
+    AWS_ACCESS_KEY              AWS access key ID
+    AWS_ACCESS_SECRET_KEY       AWS secret access key
+    SOVEREIGN_SUBNET_ID         Subnet ID for planet instances
+    SOVEREIGN_SECURITY_GROUP    Security group ID for planet instances
+
+These are never written to disk or into Terraform HCL files. They are
+passed to the terraform subprocess via environment variables only.
+
+---
+
 ## Dependencies
 
-    lemmings      -- the agent that runs on each planet
-    topobuilder   -- the terrain builder that provisions planets
-    instances.vantage.sh -- cloud pricing API for cost estimation
+Runtime dependencies that must be present in PATH:
+
+    terraform    -- infrastructure provisioning
+    ssh          -- lemmings execution on remote planets
+    scp          -- plan file delivery and result collection
+
+Lemmings is installed on each planet at provisioning time via:
+
+    go install github.com/andreimerlescu/lemmings@latest
+
+Cost estimation uses the public instances.vantage.sh API. No API key
+is required. A pricing failure for a planet is non-fatal -- the run
+continues with a zero cost estimate for the affected planet.
+
+---
+
+## Makefile
+
+    make all             lint + test + build
+    make build           compile the sovereign binary
+    make install         go install to GOPATH/bin
+    make test            unit tests with race detector
+    make test-fuzz       fuzz all fuzz targets
+    make test-bench      benchmark tests
+    make test-all        unit + fuzz + bench
+    make test-cover      unit tests with HTML coverage report
+    make lint            go vet + gofmt
+    make clean           remove binary and coverage output
+    make tidy            go mod tidy + go mod verify
+    make dry-run         estimate cost without provisioning
+    make run-local       run against localhost with minimal config
+    make clean-state     remove .sovereignd state directory
+    make show-state      print current sovereign state file
+    make show-ledger     print most recent run ledger
 
 ---
 
@@ -322,4 +382,4 @@ of its own. The sovereign is the engineer -- the one who decides
 the plan, commands the terrain, and reads the report.
 
 Sovereign is the application that makes the engineer's intent real
-across the globe.
+across the globe.​​​​​​​​​​​​​​​​
