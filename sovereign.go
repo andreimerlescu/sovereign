@@ -354,7 +354,7 @@ func newProvider(cfg SovereignConfig) (tfprovider.TerraformProvider, error) {
 	case "oci":
 		return &tfoci.TerraformProviderOCI{}, nil
 	case "ovh":
-		return &tfovh.TerraformProviderOVH{}, nil
+		return tfovh.New()
 	default:
 		return nil, fmt.Errorf("sovereign: unknown provider %q -- supported: aws, digitalocean, gcp, oci, ovh",
 			cfg.Provider)
