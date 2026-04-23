@@ -2,21 +2,23 @@ package do
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
+	exeggutor "github.com/andreimerlescu/sovereign/pkg/terraform_exeggutor"
 )
+
+// resourceType is the terraform resource type that ParseStatus searches
+// for to determine whether a DigitalOcean Droplet has been provisioned.
+const resourceType = "digitalocean_droplet"
 
 // TerraformProviderDigitalOcean implements tfprovider.TerraformProvider
 // for DigitalOcean using the digitalocean/digitalocean terraform provider.
-//
 // The struct is stateless with respect to individual planets. All
 // per-planet data flows through PlanetSpec and HCLSpec arguments.
 // Credentials are resolved once at construction and stored here.
@@ -45,10 +47,7 @@ func (p *TerraformProviderDigitalOcean) Validate() error {
 	if p.creds.Token == "" {
 		return fmt.Errorf("do: credentials not resolved -- call New()")
 	}
-	if _, err := exec.LookPath("terraform"); err != nil {
-		return fmt.Errorf("do: terraform binary not found in PATH")
-	}
-	return nil
+	return exeggutor.Validate()
 }
 
 // RenderHCL renders all HCL files for the planet described by spec
@@ -59,128 +58,45 @@ func (p *TerraformProviderDigitalOcean) RenderHCL(spec tfprovider.HCLSpec) error
 
 // Init runs terraform init in the planet's terraform directory.
 func (p *TerraformProviderDigitalOcean) Init(ctx context.Context, spec tfprovider.PlanetSpec) error {
-	return p.tf(ctx, spec, "init", "-no-color")
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).Init(ctx)
 }
 
-// InitOrApply runs terraform init if the .terraform directory does not
-// exist, then runs apply. Safe to call on an already-initialized planet.
+// InitOrApply runs terraform init if not already initialized then apply.
 func (p *TerraformProviderDigitalOcean) InitOrApply(ctx context.Context, spec tfprovider.PlanetSpec) error {
-	dotTerraform := filepath.Join(spec.WorkDir, "terraform", ".terraform")
-	if _, err := os.Stat(dotTerraform); os.IsNotExist(err) {
-		if err := p.Init(ctx, spec); err != nil {
-			return err
-		}
-	}
-	return p.Apply(ctx, spec)
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).InitOrApply(ctx)
 }
 
 // Apply runs terraform apply in the planet's terraform directory.
 func (p *TerraformProviderDigitalOcean) Apply(ctx context.Context, spec tfprovider.PlanetSpec) error {
-	return p.tf(ctx, spec, "apply", "-auto-approve", "-no-color")
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).Apply(ctx)
 }
 
 // Destroy runs terraform destroy in the planet's terraform directory.
 func (p *TerraformProviderDigitalOcean) Destroy(ctx context.Context, spec tfprovider.PlanetSpec) error {
-	return p.tf(ctx, spec, "destroy", "-auto-approve", "-no-color")
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).Destroy(ctx)
 }
 
-// Output runs terraform output -json and parses the result into
-// a ProvisionOutput. Returns an error if any expected output is missing.
+// Output runs terraform output -json and parses instance_id,
+// public_ipv4, private_ipv4 into a ProvisionOutput.
 func (p *TerraformProviderDigitalOcean) Output(ctx context.Context, spec tfprovider.PlanetSpec) (*tfprovider.ProvisionOutput, error) {
-	terraformDir := filepath.Join(spec.WorkDir, "terraform")
-	cmd := exec.CommandContext(ctx, "terraform", "output", "-json", "-no-color")
-	cmd.Dir = terraformDir
-	cmd.Env = p.env()
-
-	out, err := cmd.Output()
+	exe := exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env())
+	result, err := exe.ParseOutput(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("do: terraform output planet %d: %w",
-			spec.PlanetID, err)
+		return nil, err
 	}
-
-	var raw map[string]struct {
-		Value string `json:"value"`
-	}
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("do: parse terraform output planet %d: %w",
-			spec.PlanetID, err)
-	}
-
-	result := &tfprovider.ProvisionOutput{
-		Region: spec.Region,
-		Zone:   spec.Zone,
-	}
-
-	var missing []string
-	if v, ok := raw["instance_id"]; ok {
-		result.InstanceID = v.Value
-		result.ProviderRef = v.Value
-	} else {
-		missing = append(missing, "instance_id")
-	}
-	if v, ok := raw["public_ipv4"]; ok {
-		result.PublicIPv4 = v.Value
-	} else {
-		missing = append(missing, "public_ipv4")
-	}
-	if v, ok := raw["private_ipv4"]; ok {
-		result.PrivateIPv4 = v.Value
-	} else {
-		missing = append(missing, "private_ipv4")
-	}
-
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("do: missing terraform outputs for planet %d: %v",
-			spec.PlanetID, missing)
-	}
-
-	return result, nil
+	return &tfprovider.ProvisionOutput{
+		InstanceID:  result.InstanceID,
+		PublicIPv4:  result.PublicIPv4,
+		PrivateIPv4: result.PrivateIPv4,
+		Region:      spec.Region,
+		Zone:        spec.Zone,
+		ProviderRef: result.InstanceID,
+	}, nil
 }
 
-// Status runs terraform show -json and reports the current lifecycle
-// status of the planet's managed Droplet resource.
+// Status checks the current terraform lifecycle status for the planet.
 func (p *TerraformProviderDigitalOcean) Status(ctx context.Context, spec tfprovider.PlanetSpec) (tfprovider.LifecycleStatus, error) {
-	stateFile := filepath.Join(spec.WorkDir, "terraform", "terraform.tfstate")
-	if _, err := os.Stat(stateFile); os.IsNotExist(err) {
-		return tfprovider.LifecycleUninitialized, nil
-	}
-
-	terraformDir := filepath.Join(spec.WorkDir, "terraform")
-	cmd := exec.CommandContext(ctx, "terraform", "show", "-json", "-no-color")
-	cmd.Dir = terraformDir
-	cmd.Env = p.env()
-
-	out, err := cmd.Output()
-	if err != nil {
-		return tfprovider.LifecycleFailed,
-			fmt.Errorf("do: terraform show planet %d: %w", spec.PlanetID, err)
-	}
-
-	var state struct {
-		Values struct {
-			RootModule struct {
-				Resources []struct {
-					Type   string `json:"type"`
-					Values struct {
-						ID string `json:"id"`
-					} `json:"values"`
-				} `json:"resources"`
-			} `json:"root_module"`
-		} `json:"values"`
-	}
-
-	if err := json.Unmarshal(out, &state); err != nil {
-		return tfprovider.LifecycleFailed,
-			fmt.Errorf("do: parse terraform show planet %d: %w", spec.PlanetID, err)
-	}
-
-	for _, r := range state.Values.RootModule.Resources {
-		if r.Type == "digitalocean_droplet" && r.Values.ID != "" {
-			return tfprovider.LifecycleApplied, nil
-		}
-	}
-
-	return tfprovider.LifecycleUninitialized, nil
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).ParseStatus(ctx, resourceType)
 }
 
 // StateBackend returns the local terraform state file path for this planet.
@@ -224,32 +140,16 @@ func (p *TerraformProviderDigitalOcean) SaveState(spec tfprovider.PlanetSpec, st
 	return nil
 }
 
-// UnloadState is a no-op. TerraformProviderDigitalOcean is stateless --
-// there is no in-memory per-planet state to clear.
+// UnloadState is a no-op. TerraformProviderDigitalOcean is stateless.
 func (p *TerraformProviderDigitalOcean) UnloadState(_ tfprovider.PlanetSpec) error {
 	return nil
 }
 
 // -- private helpers ---------------------------------------------------------
 
-// tf runs a terraform subcommand in the planet's terraform directory.
-func (p *TerraformProviderDigitalOcean) tf(ctx context.Context, spec tfprovider.PlanetSpec, args ...string) error {
-	terraformDir := filepath.Join(spec.WorkDir, "terraform")
-	cmd := exec.CommandContext(ctx, "terraform", args...)
-	cmd.Dir = terraformDir
-	cmd.Env = p.env()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("do: terraform %s planet %d: %w",
-			args[0], spec.PlanetID, err)
-	}
-	return nil
-}
-
 // env returns the environment for terraform subprocess calls.
-// The DIGITALOCEAN_TOKEN is read automatically by the terraform
-// provider from this environment. It is never written into HCL files.
+// DIGITALOCEAN_TOKEN is passed as an environment variable so it
+// never appears in HCL files or backup directories.
 func (p *TerraformProviderDigitalOcean) env() []string {
 	return []string{
 		"PATH=" + os.Getenv("PATH"),
