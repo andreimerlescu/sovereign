@@ -127,13 +127,6 @@ Package files:
 
 ## Key Design Decisions
 
-### No Topobuilder
-
-Topobuilder was built for SurgePays running Ubuntu with Docker,
-HAProxy, Cloudflare, GitLab Terraform backend. Sovereign generates
-Terraform HCL directly and calls terraform as a subprocess via
-pkg/terraform_exeggutor. No topobuilder dependency anywhere.
-
 ### Event Bus as Nervous System
 
 Sovereign has its own event bus in pkg/events inspired by lemmings'
