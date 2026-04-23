@@ -29,11 +29,11 @@ test:
 
 .PHONY: test-fuzz
 test-fuzz:
-	$(GO) test $(GOFLAGS) -fuzz=FuzzMergeConfigFile   -fuzztime=$(FUZZTIME) .
-	$(GO) test $(GOFLAGS) -fuzz=FuzzDomainFromURL      -fuzztime=$(FUZZTIME) .
-	$(GO) test $(GOFLAGS) -fuzz=FuzzFormatBytes        -fuzztime=$(FUZZTIME) .
-	$(GO) test $(GOFLAGS) -fuzz=FuzzDollarToMicrocents -fuzztime=$(FUZZTIME) .
-	$(GO) test $(GOFLAGS) -fuzz=FuzzMicrocentsToDisplay -fuzztime=$(FUZZTIME) .
+	$(GO) test $(GOFLAGS) -fuzz=FuzzMergeConfigFile    -fuzztime=$(FUZZTIME) .
+	$(GO) test $(GOFLAGS) -fuzz=FuzzDomainFromURL       -fuzztime=$(FUZZTIME) .
+	$(GO) test $(GOFLAGS) -fuzz=FuzzFormatBytes         -fuzztime=$(FUZZTIME) .
+	$(GO) test $(GOFLAGS) -fuzz=FuzzDollarToMicrocents  -fuzztime=$(FUZZTIME) ./pkg/pricing/...
+	$(GO) test $(GOFLAGS) -fuzz=FuzzMicrocentsToDisplay -fuzztime=$(FUZZTIME) ./pkg/pricing/...
 
 .PHONY: test-bench
 test-bench:
@@ -134,6 +134,31 @@ show-ledger:
 	@find ~/.sovereignd/runs -name "ledger.yml" | sort | tail -1 | xargs cat 2>/dev/null \
 		|| echo "no ledger found"
 
+# -- Packages ----------------------------------------------------------------
+
+.PHONY: test-events
+test-events:
+	$(GO) test $(GOFLAGS) ./pkg/events/...
+
+.PHONY: test-ledger
+test-ledger:
+	$(GO) test $(GOFLAGS) ./pkg/ledger/...
+
+.PHONY: test-pricing
+test-pricing:
+	$(GO) test $(GOFLAGS) ./pkg/pricing/...
+
+.PHONY: test-exeggutor
+test-exeggutor:
+	$(GO) test $(GOFLAGS) ./pkg/terraform_exeggutor/...
+
+.PHONY: test-providers
+test-providers:
+	$(GO) test $(GOFLAGS) ./pkg/terraform_provider/...
+
+.PHONY: test-packages
+test-packages: test-events test-ledger test-pricing test-exeggutor test-providers
+
 # -- Help --------------------------------------------------------------------
 
 .PHONY: help
@@ -142,37 +167,43 @@ help:
 	@echo "  sovereign -- available targets"
 	@echo ""
 	@echo "  Build"
-	@echo "    make all           lint + test + build"
-	@echo "    make build         compile the sovereign binary"
-	@echo "    make install       go install to GOPATH/bin"
+	@echo "    make all              lint + test + build"
+	@echo "    make build            compile the sovereign binary"
+	@echo "    make install          go install to GOPATH/bin"
 	@echo ""
 	@echo "  Test"
-	@echo "    make test          unit tests with race detector"
-	@echo "    make test-fuzz     fuzz all fuzz targets for FUZZTIME each"
-	@echo "    make test-bench    benchmark tests"
-	@echo "    make test-all      unit + fuzz + bench"
-	@echo "    make test-cover    unit tests with HTML coverage report"
+	@echo "    make test             unit tests with race detector (all packages)"
+	@echo "    make test-fuzz        fuzz all fuzz targets for FUZZTIME each"
+	@echo "    make test-bench       benchmark tests (all packages)"
+	@echo "    make test-all         unit + fuzz + bench"
+	@echo "    make test-cover       unit tests with HTML coverage report"
+	@echo "    make test-packages    test all pkg/* packages individually"
+	@echo "    make test-events      test pkg/events only"
+	@echo "    make test-ledger      test pkg/ledger only"
+	@echo "    make test-pricing     test pkg/pricing only"
+	@echo "    make test-exeggutor   test pkg/terraform_exeggutor only"
+	@echo "    make test-providers   test pkg/terraform_provider/... only"
 	@echo ""
 	@echo "  Lint"
-	@echo "    make lint          go vet + gofmt"
-	@echo "    make vet           go vet only"
-	@echo "    make fmt           gofmt -w (writes files)"
-	@echo "    make fmt-check     gofmt check only (exits 1 if files need formatting)"
+	@echo "    make lint             go vet + gofmt"
+	@echo "    make vet              go vet only"
+	@echo "    make fmt              gofmt -w (writes files)"
+	@echo "    make fmt-check        gofmt check only (exits 1 if files need formatting)"
 	@echo ""
 	@echo "  Maintenance"
-	@echo "    make clean         remove binary and coverage output"
-	@echo "    make tidy          go mod tidy + go mod verify"
+	@echo "    make clean            remove binary and coverage output"
+	@echo "    make tidy             go mod tidy + go mod verify"
 	@echo ""
 	@echo "  State"
-	@echo "    make clean-state   remove .sovereignd state directory"
-	@echo "    make show-state    print current sovereign state file"
+	@echo "    make clean-state      remove .sovereignd state directory"
+	@echo "    make show-state       print current sovereign state file"
 	@echo ""
 	@echo "  Ledger"
-	@echo "    make show-ledger   print most recent run ledger"
+	@echo "    make show-ledger      print most recent run ledger"
 	@echo ""
 	@echo "  Run"
-	@echo "    make dry-run       estimate cost without provisioning"
-	@echo "    make run-local     run against localhost with minimal config"
+	@echo "    make dry-run          estimate cost without provisioning"
+	@echo "    make run-local        run against localhost with minimal config"
 	@echo ""
 	@echo "  Overrides"
 	@echo "    FUZZTIME=30s make test-fuzz"
