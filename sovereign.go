@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	tfdo  "github.com/andreimerlescu/sovereign/pkg/terraform_provider/do"
-    tfgcp "github.com/andreimerlescu/sovereign/pkg/terraform_provider/gcp" 
-    tfoci "github.com/andreimerlescu/sovereign/pkg/terraform_provider/oci"
-    tfovh "github.com/andreimerlescu/sovereign/pkg/terraform_provider/ovh"
 	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
 	tfaws "github.com/andreimerlescu/sovereign/pkg/terraform_provider/aws"
+	tfdo "github.com/andreimerlescu/sovereign/pkg/terraform_provider/do"
+	tfgcp "github.com/andreimerlescu/sovereign/pkg/terraform_provider/gcp"
+	tfoci "github.com/andreimerlescu/sovereign/pkg/terraform_provider/oci"
+	tfovh "github.com/andreimerlescu/sovereign/pkg/terraform_provider/ovh"
 )
 
 // SovereignConfig is the single source of truth flowing from CLI
@@ -29,9 +29,9 @@ type SovereignConfig struct {
 	Plan    string
 
 	// Infrastructure
-	Provider  string
-	Regions   []string
-	SaveTo    []string
+	Provider string
+	Regions  []string
+	SaveTo   []string
 
 	// Timeouts
 	ProvisionTimeout time.Duration
@@ -50,7 +50,7 @@ type SovereignConfig struct {
 	// Remote instance
 	RemoteUser string
 
-	// AMI selection
+	// AMI / image selection
 	AMIOS     string
 	AMIOwners string
 
@@ -80,15 +80,35 @@ const (
 	PlanetStatusLost         PlanetStatus = "lost"
 )
 
-// defaultAWSRegions is used when no regions are specified.
-// Five regions providing geographic distribution across
-// North America, Europe, and Asia Pacific.
+// defaultAWSRegions is used when no regions are specified and the
+// provider is aws. Five regions providing geographic distribution
+// across North America, Europe, and Asia Pacific.
 var defaultAWSRegions = []string{
 	"us-east-1",
 	"us-west-1",
 	"eu-west-1",
 	"ap-southeast-1",
 	"sa-east-1",
+}
+
+// defaultDORegions is used when no regions are specified and the
+// provider is digitalocean.
+var defaultDORegions = []string{
+	"nyc1",
+	"sfo3",
+	"ams3",
+	"sgp1",
+	"lon1",
+}
+
+// defaultOVHRegions is used when no regions are specified and the
+// provider is ovh.
+var defaultOVHRegions = []string{
+	"GRA11",
+	"SBG5",
+	"DE1",
+	"UK1",
+	"SGP1",
 }
 
 // Planet represents a single remote instance running lemmings.
@@ -107,8 +127,8 @@ type Planet struct {
 	mu            sync.Mutex   `yaml:"-"`
 }
 
-// SovereignState is persisted to disk so sovereign can resume
-// after a crash without orphaning infrastructure.
+// SovereignState is persisted to disk so sovereign can resume after
+// a crash without orphaning infrastructure.
 type SovereignState struct {
 	Version   string          `yaml:"Version"`
 	StartedAt time.Time       `yaml:"StartedAt"`
@@ -271,10 +291,12 @@ func (s *Sovereign) Run() error {
 
 // initPlanets builds the initial planet list from config.
 // Regions are distributed round-robin across the requested planet count.
+// Default regions are selected based on the configured provider when
+// no regions are specified by the operator.
 func (s *Sovereign) initPlanets() []*Planet {
 	regions := s.cfg.Regions
 	if len(regions) == 0 {
-		regions = defaultAWSRegions
+		regions = s.defaultRegions()
 	}
 	planets := make([]*Planet, s.cfg.Planets)
 	for i := 0; i < s.cfg.Planets; i++ {
@@ -282,11 +304,25 @@ func (s *Sovereign) initPlanets() []*Planet {
 			ID:           i + 1,
 			Region:       regions[i%len(regions)],
 			InstanceType: s.cfg.InstanceType,
-			RemoteUser:   s.cfg.RemoteUser, 
+			RemoteUser:   s.cfg.RemoteUser,
 			Status:       PlanetStatusPending,
 		}
 	}
 	return planets
+}
+
+// defaultRegions returns the appropriate default region list for the
+// configured provider. Falls back to AWS regions for unknown providers
+// since AWS is the only fully implemented provider.
+func (s *Sovereign) defaultRegions() []string {
+	switch s.cfg.Provider {
+	case "digitalocean":
+		return defaultDORegions
+	case "ovh":
+		return defaultOVHRegions
+	default:
+		return defaultAWSRegions
+	}
 }
 
 // confirmWithUser prompts the engineer before provisioning.
@@ -333,6 +369,7 @@ func (s *Sovereign) printFinalSummary() {
 	fmt.Printf("  sovereign v%s -- final summary\n", s.cfg.Version)
 	fmt.Println("─────────────────────────────────────────")
 	fmt.Printf("  target:    %s\n", s.cfg.Hit)
+	fmt.Printf("  provider:  %s\n", s.cfg.Provider)
 	fmt.Printf("  planets:   %d provisioned\n", len(s.planets))
 	fmt.Printf("  completed: %d\n", done)
 	if lost > 0 {
@@ -343,20 +380,22 @@ func (s *Sovereign) printFinalSummary() {
 	fmt.Println("─────────────────────────────────────────")
 }
 
+// newProvider constructs the TerraformProvider for the configured
+// cloud provider.
 func newProvider(cfg SovereignConfig) (tfprovider.TerraformProvider, error) {
 	switch cfg.Provider {
 	case "aws":
 		return tfaws.New()
 	case "digitalocean":
-		return &tfdo.TerraformProviderDigitalOcean{}, nil
+		return tfdo.New()
+	case "ovh":
+		return tfovh.New()
 	case "gcp":
 		return &tfgcp.TerraformProviderGCP{}, nil
 	case "oci":
 		return &tfoci.TerraformProviderOCI{}, nil
-	case "ovh":
-		return tfovh.New()
 	default:
-		return nil, fmt.Errorf("sovereign: unknown provider %q -- supported: aws, digitalocean, gcp, oci, ovh",
+		return nil, fmt.Errorf("sovereign: unknown provider %q -- supported: aws, digitalocean, ovh",
 			cfg.Provider)
 	}
 }
