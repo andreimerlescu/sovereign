@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andreimerlescu/sovereign/pkg/events"
 	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
 )
 
@@ -85,22 +86,24 @@ func (s *Sovereign) resumeOrProvision(planet *Planet) error {
 	if state != nil {
 		switch state.Status {
 		case tfprovider.LifecycleApplied:
-			// instance is running -- hydrate and continue
 			return s.hydratePlanetFromState(planet, state)
 
 		case tfprovider.LifecycleApplying, tfprovider.LifecycleInterrupted:
-			// interrupted mid-apply -- let InitOrApply sort it out
 			fmt.Printf("  sovereign: planet %d interrupted -- resuming apply\n", planet.ID)
+			s.bus.Emit(events.Event{
+				Kind:     events.KindRunInterrupted,
+				PlanetID: planet.ID,
+				Provider: s.provider.Name(),
+				Region:   planet.Region,
+			})
 			return s.applyAndHydrate(planet)
 
 		case tfprovider.LifecycleInitialized:
-			// init succeeded but apply never ran
 			fmt.Printf("  sovereign: planet %d initialized -- running apply\n", planet.ID)
 			return s.applyAndHydrate(planet)
 		}
 	}
 
-	// no usable state -- provision from scratch
 	return s.provisionPlanet(planet)
 }
 
@@ -115,37 +118,41 @@ func (s *Sovereign) provisionPlanet(planet *Planet) error {
 	fmt.Printf("  sovereign: provisioning planet %d in %s...\n",
 		planet.ID, planet.Region)
 
-	s.ledger.Append(LedgerEvent{
-		PlanetID:  planet.ID,
-		Provider:  s.provider.Name(),
-		Region:    planet.Region,
-		EventType: LedgerEventProvisionStart,
+	s.bus.Emit(events.Event{
+		Kind:     events.KindProvisionStart,
+		PlanetID: planet.ID,
+		Provider: s.provider.Name(),
+		Region:   planet.Region,
 	})
 
 	// render HCL into planet work dir
 	if err := s.provider.RenderHCL(s.hclSpec(planet)); err != nil {
-		return s.markLost(planet, LedgerEventProvisionFailed, err)
+		return s.markLost(planet, events.KindProvisionFailed, err)
 	}
 
 	spec := s.planetSpec(planet)
 
-	// save initialized state
-	if err := s.saveProviderState(planet, tfprovider.LifecycleUninitialized, nil); err != nil {
-		return s.markLost(planet, LedgerEventProvisionFailed, err)
-	}
+	// save uninitialized state
+	s.saveProviderState(planet, tfprovider.LifecycleUninitialized, nil)
 
 	// terraform init
-	s.ledger.Append(LedgerEvent{
-		PlanetID:  planet.ID,
-		EventType: LedgerEventInitStart,
+	s.bus.Emit(events.Event{
+		Kind:     events.KindInitStart,
+		PlanetID: planet.ID,
+		Provider: s.provider.Name(),
+		Region:   planet.Region,
 	})
+
 	if err := s.provider.Init(s.ctx, spec); err != nil {
 		s.saveProviderState(planet, tfprovider.LifecycleFailed, nil)
-		return s.markLost(planet, LedgerEventInitFailed, err)
+		return s.markLost(planet, events.KindInitFailed, err)
 	}
-	s.ledger.Append(LedgerEvent{
-		PlanetID:  planet.ID,
-		EventType: LedgerEventInitComplete,
+
+	s.bus.Emit(events.Event{
+		Kind:     events.KindInitComplete,
+		PlanetID: planet.ID,
+		Provider: s.provider.Name(),
+		Region:   planet.Region,
 	})
 	s.saveProviderState(planet, tfprovider.LifecycleInitialized, nil)
 
@@ -153,30 +160,34 @@ func (s *Sovereign) provisionPlanet(planet *Planet) error {
 }
 
 // applyAndHydrate runs terraform apply, reads output, and marks
-// the planet running. Called both on fresh provision and on resume.
+// the planet running.
 func (s *Sovereign) applyAndHydrate(planet *Planet) error {
 	spec := s.planetSpec(planet)
 
 	s.saveProviderState(planet, tfprovider.LifecycleApplying, nil)
-	s.ledger.Append(LedgerEvent{
-		PlanetID:  planet.ID,
-		EventType: LedgerEventApplyStart,
+	s.bus.Emit(events.Event{
+		Kind:     events.KindApplyStart,
+		PlanetID: planet.ID,
+		Provider: s.provider.Name(),
+		Region:   planet.Region,
 	})
 
 	if err := s.provider.Apply(s.ctx, spec); err != nil {
 		s.saveProviderState(planet, tfprovider.LifecycleInterrupted, nil)
-		return s.markLost(planet, LedgerEventApplyFailed, err)
+		return s.markLost(planet, events.KindApplyFailed, err)
 	}
 
-	s.ledger.Append(LedgerEvent{
-		PlanetID:  planet.ID,
-		EventType: LedgerEventApplyComplete,
+	s.bus.Emit(events.Event{
+		Kind:     events.KindApplyComplete,
+		PlanetID: planet.ID,
+		Provider: s.provider.Name(),
+		Region:   planet.Region,
 	})
 
 	out, err := s.provider.Output(s.ctx, spec)
 	if err != nil {
 		s.saveProviderState(planet, tfprovider.LifecycleFailed, nil)
-		return s.markLost(planet, LedgerEventProvisionFailed, err)
+		return s.markLost(planet, events.KindProvisionFailed, err)
 	}
 
 	return s.hydratePlanetFromOutput(planet, out)
@@ -192,9 +203,11 @@ func (s *Sovereign) hydratePlanetFromOutput(planet *Planet, out *tfprovider.Prov
 	planet.mu.Unlock()
 
 	s.saveProviderState(planet, tfprovider.LifecycleApplied, out)
-	s.ledger.Append(LedgerEvent{
+	s.bus.Emit(events.Event{
+		Kind:       events.KindProvisionComplete,
 		PlanetID:   planet.ID,
-		EventType:  LedgerEventProvisionComplete,
+		Provider:   s.provider.Name(),
+		Region:     planet.Region,
 		InstanceID: out.InstanceID,
 		PublicIPv4: out.PublicIPv4,
 	})
@@ -206,8 +219,7 @@ func (s *Sovereign) hydratePlanetFromOutput(planet *Planet, out *tfprovider.Prov
 }
 
 // hydratePlanetFromState populates planet fields from an existing
-// ProviderState. Used when resuming a run where the planet was
-// already successfully provisioned.
+// ProviderState.
 func (s *Sovereign) hydratePlanetFromState(planet *Planet, state *tfprovider.ProviderState) error {
 	planet.mu.Lock()
 	planet.PublicIPv4 = state.PublicIPv4
@@ -222,13 +234,13 @@ func (s *Sovereign) hydratePlanetFromState(planet *Planet, state *tfprovider.Pro
 }
 
 // hydrateFromProviderState loads the provider state file and
-// hydrates the planet from it. Used when the ledger indicates
-// a planet was provisioned but sovereign needs the IP and instance ID.
+// hydrates the planet from it.
 func (s *Sovereign) hydrateFromProviderState(planet *Planet) error {
 	spec := s.planetSpec(planet)
 	state, err := s.provider.LoadState(spec)
 	if err != nil {
-		return fmt.Errorf("planet %d: load provider state for resume: %w", planet.ID, err)
+		return fmt.Errorf("planet %d: load provider state for resume: %w",
+			planet.ID, err)
 	}
 	if state == nil {
 		return fmt.Errorf("planet %d: ledger says provisioned but no provider state found",
@@ -238,8 +250,6 @@ func (s *Sovereign) hydrateFromProviderState(planet *Planet) error {
 }
 
 // destroyTerrain destroys all provisioned planets concurrently.
-// All planets are attempted regardless of individual failures.
-// Returns an error if any planet fails to terminate.
 func (s *Sovereign) destroyTerrain() error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -277,9 +287,11 @@ func (s *Sovereign) destroyPlanet(planet *Planet) error {
 	fmt.Printf("  sovereign: destroying planet %d (%s)...\n",
 		planet.ID, planet.InstanceID)
 
-	s.ledger.Append(LedgerEvent{
+	s.bus.Emit(events.Event{
+		Kind:       events.KindDestroyStart,
 		PlanetID:   planet.ID,
-		EventType:  LedgerEventDestroyStart,
+		Provider:   s.provider.Name(),
+		Region:     planet.Region,
 		InstanceID: planet.InstanceID,
 	})
 
@@ -287,19 +299,24 @@ func (s *Sovereign) destroyPlanet(planet *Planet) error {
 
 	spec := s.planetSpec(planet)
 	if err := s.provider.Destroy(s.ctx, spec); err != nil {
-		s.ledger.Append(LedgerEvent{
-			PlanetID:  planet.ID,
-			EventType: LedgerEventDestroyFailed,
-			Error:     err.Error(),
+		s.bus.Emit(events.Event{
+			Kind:       events.KindDestroyFailed,
+			PlanetID:   planet.ID,
+			Provider:   s.provider.Name(),
+			Region:     planet.Region,
+			InstanceID: planet.InstanceID,
+			Err:        err,
 		})
 		return fmt.Errorf("planet %d (%s): destroy failed: %w",
 			planet.ID, planet.InstanceID, err)
 	}
 
 	s.saveProviderState(planet, tfprovider.LifecycleDestroyed, nil)
-	s.ledger.Append(LedgerEvent{
+	s.bus.Emit(events.Event{
+		Kind:       events.KindDestroyComplete,
 		PlanetID:   planet.ID,
-		EventType:  LedgerEventDestroyComplete,
+		Provider:   s.provider.Name(),
+		Region:     planet.Region,
 		InstanceID: planet.InstanceID,
 	})
 
@@ -309,18 +326,20 @@ func (s *Sovereign) destroyPlanet(planet *Planet) error {
 
 // -- private helpers ---------------------------------------------------------
 
-// markLost sets the planet status to lost, appends a failure event
-// to the ledger, and returns the original error wrapped with planet context.
-func (s *Sovereign) markLost(planet *Planet, event LedgerEventType, err error) error {
+// markLost sets the planet status to lost, emits a failure event
+// to the bus, and returns the original error wrapped with context.
+func (s *Sovereign) markLost(planet *Planet, kind events.EventKind, err error) error {
 	planet.mu.Lock()
 	planet.Status = PlanetStatusLost
 	planet.Error = err
 	planet.mu.Unlock()
 
-	s.ledger.Append(LedgerEvent{
-		PlanetID:  planet.ID,
-		EventType: event,
-		Error:     err.Error(),
+	s.bus.Emit(events.Event{
+		Kind:     kind,
+		PlanetID: planet.ID,
+		Provider: s.provider.Name(),
+		Region:   planet.Region,
+		Err:      err,
 	})
 
 	return fmt.Errorf("planet %d: %w", planet.ID, err)
@@ -380,8 +399,7 @@ func (s *Sovereign) planetSpec(planet *Planet) tfprovider.PlanetSpec {
 	}
 }
 
-// hclSpec constructs an HCLSpec from a planet and sovereign config
-// for provider HCL rendering.
+// hclSpec constructs an HCLSpec from a planet and sovereign config.
 func (s *Sovereign) hclSpec(planet *Planet) tfprovider.HCLSpec {
 	home, _ := os.UserHomeDir()
 	return tfprovider.HCLSpec{
