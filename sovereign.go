@@ -8,6 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andreimerlescu/sovereign/pkg/events"
+	"github.com/andreimerlescu/sovereign/pkg/ledger"
+	"github.com/andreimerlescu/sovereign/pkg/pricing"
 	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
 	tfaws "github.com/andreimerlescu/sovereign/pkg/terraform_provider/aws"
 	tfdo "github.com/andreimerlescu/sovereign/pkg/terraform_provider/do"
@@ -81,8 +84,7 @@ const (
 )
 
 // defaultAWSRegions is used when no regions are specified and the
-// provider is aws. Five regions providing geographic distribution
-// across North America, Europe, and Asia Pacific.
+// provider is aws.
 var defaultAWSRegions = []string{
 	"us-east-1",
 	"us-west-1",
@@ -147,11 +149,12 @@ type Sovereign struct {
 	startedAt time.Time
 	mu        sync.Mutex
 	provider  tfprovider.TerraformProvider
-	ledger    *Ledger
+	ledger    *ledger.Ledger
+	bus       *events.EventBus
 }
 
-// NewSovereign constructs a Sovereign, initializes the provider and
-// ledger, loads any existing state, and prepares for Run.
+// NewSovereign constructs a Sovereign, initializes the provider, event
+// bus, and ledger, loads any existing state, and prepares for Run.
 func NewSovereign(ctx context.Context, cfg SovereignConfig) (*Sovereign, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -182,27 +185,31 @@ func NewSovereign(ctx context.Context, cfg SovereignConfig) (*Sovereign, error) 
 	}
 	s.provider = provider
 
-	// initialize ledger
+	// initialize event bus
+	s.bus = events.NewEventBus()
+
+	// initialize ledger and wire it as the first bus subscriber
 	home, err := os.UserHomeDir()
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("sovereign: resolve home dir: %w", err)
 	}
 	sovereignDir := filepath.Join(home, ".sovereignd")
-	ledger, err := NewLedger(sovereignDir, s.startedAt)
+	l, err := ledger.NewLedger(sovereignDir, s.startedAt)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("sovereign: initialize ledger: %w", err)
 	}
-	s.ledger = ledger
+	s.ledger = l
+	s.bus.Subscribe(s.ledger.AsSubscriber())
 
 	// load existing state or initialize fresh
 	existing, loadErr := s.loadState()
 	if loadErr == nil && existing != nil {
 		fmt.Printf("  sovereign: resuming from existing state at %s\n", stateFile)
-		s.ledger.Append(LedgerEvent{
-			EventType: LedgerEventResumed,
-			Detail:    stateFile,
+		s.bus.Emit(events.Event{
+			Kind:   events.KindRunResumed,
+			Detail: stateFile,
 		})
 		s.state = existing
 		s.planets = existing.Planets
@@ -222,6 +229,7 @@ func NewSovereign(ctx context.Context, cfg SovereignConfig) (*Sovereign, error) 
 // Run executes the full sovereign lifecycle in order.
 func (s *Sovereign) Run() error {
 	defer s.cancel()
+	defer s.bus.Close()
 
 	// Step 1 -- estimate cost
 	estimate, err := s.estimateCost()
@@ -312,8 +320,7 @@ func (s *Sovereign) initPlanets() []*Planet {
 }
 
 // defaultRegions returns the appropriate default region list for the
-// configured provider. Falls back to AWS regions for unknown providers
-// since AWS is the only fully implemented provider.
+// configured provider.
 func (s *Sovereign) defaultRegions() []string {
 	switch s.cfg.Provider {
 	case "digitalocean":
@@ -344,11 +351,11 @@ func (s *Sovereign) printCostEstimate(estimate *CostEstimate) {
 	for _, p := range estimate.Planets {
 		fmt.Printf("    planet %d  %s  %s  %s/hr\n",
 			p.ID, p.Region, p.InstanceType,
-			microcentsToDetailedDisplay(p.HourlyRate))
+			pricing.MicrocentsToDetailedDisplay(p.HourlyRate))
 	}
 	fmt.Printf("\n    total planets:   %d\n", len(estimate.Planets))
 	fmt.Printf("    est. duration:   %s\n", estimate.Duration.Round(time.Second))
-	fmt.Printf("    projected cost:  %s\n", microcentsToDisplay(estimate.TotalCost))
+	fmt.Printf("    projected cost:  %s\n", pricing.MicrocentsToDisplay(estimate.TotalCost))
 	fmt.Println()
 }
 
