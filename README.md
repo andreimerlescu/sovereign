@@ -5,7 +5,7 @@
 > and renders unified reports across geographic origins.
 
 
-[![Go](https://github.com/andreimerlescu/sovereign/actions/workflows/go.yml/badge.svg)](https://github.com/andreimerlescu/sovereign/actions/workflows/go.yml)
+[![Go](https://github.com/andreimerlescu/sovereign/actions/workflows/sovereign.yml/badge.svg)](https://github.com/andreimerlescu/sovereign/actions/workflows/sovereign.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/andreimerlescu/sovereign)](https://goreportcard.com/report/github.com/andreimerlescu/sovereign)
 [![GoDoc](https://pkg.go.dev/badge/github.com/andreimerlescu/sovereign.svg)](https://pkg.go.dev/github.com/andreimerlescu/sovereign)
 [![License](https://img.shields.io/github/license/andreimerlescu/sovereign)](https://github.com/andreimerlescu/sovereign/blob/main/LICENSE)
