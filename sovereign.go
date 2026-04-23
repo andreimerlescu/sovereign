@@ -92,6 +92,7 @@ type Planet struct {
 	ID            int          `yaml:"ID"`
 	Region        string       `yaml:"Region"`
 	InstanceType  string       `yaml:"InstanceType"`
+	RemoteUser    string       `yaml:"RemoteUser"`
 	PublicIPv4    string       `yaml:"PublicIPv4"`
 	InstanceID    string       `yaml:"InstanceID"`
 	Status        PlanetStatus `yaml:"Status"`
@@ -277,6 +278,7 @@ func (s *Sovereign) initPlanets() []*Planet {
 			ID:           i + 1,
 			Region:       regions[i%len(regions)],
 			InstanceType: s.cfg.InstanceType,
+			RemoteUser:   s.cfg.RemoteUser, 
 			Status:       PlanetStatusPending,
 		}
 	}
