@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -16,8 +17,7 @@ func TestNewLedger_CreatesFile(t *testing.T) {
 	requireNoError(t, err, "NewLedger creates file")
 	requireTrue(t, l != nil, "NewLedger returns non-nil ledger")
 
-	// file must exist on disk
-	if _, statErr := statFile(l.Path()); statErr != nil {
+	if _, statErr := os.Stat(l.Path()); statErr != nil {
 		t.Fatalf("NewLedger: ledger file not found at %s", l.Path())
 	}
 }
@@ -42,7 +42,7 @@ func TestNewLedger_EmptyEvents(t *testing.T) {
 }
 
 // TestNewLedger_CreatesRunDirectory verifies that NewLedger creates
-// the runs/<runID> directory structure.
+// the runs/<runID> directory structure inside sovereignDir.
 func TestNewLedger_CreatesRunDirectory(t *testing.T) {
 	dir := t.TempDir()
 	startedAt := time.Date(2026, 4, 22, 14, 30, 0, 0, time.UTC)
@@ -50,7 +50,7 @@ func TestNewLedger_CreatesRunDirectory(t *testing.T) {
 	requireNoError(t, err, "NewLedger creates run directory")
 
 	runDir := filepath.Join(dir, "runs", "2026-04-22T14-30-00")
-	if _, statErr := statFile(runDir); statErr != nil {
+	if _, statErr := os.Stat(runDir); statErr != nil {
 		t.Fatalf("NewLedger: run directory not created at %s", runDir)
 	}
 }
@@ -73,21 +73,19 @@ func TestLoadLedger_RoundTrip(t *testing.T) {
 	l, err := NewLedger(dir, startedAt)
 	requireNoError(t, err, "LoadLedger round trip create")
 
-	// append an event so there's something to verify
-	appendErr := l.Append(LedgerEvent{
+	requireNoError(t, l.Append(LedgerEvent{
 		PlanetID:  1,
 		EventType: LedgerEventProvisionStart,
 		Region:    "us-east-1",
-	})
-	requireNoError(t, appendErr, "LoadLedger round trip append")
+	}), "LoadLedger round trip append")
 
-	// load it back
 	loaded, loadErr := LoadLedger(l.Path())
 	requireNoError(t, loadErr, "LoadLedger round trip load")
 	requireTrue(t, loaded != nil, "LoadLedger round trip non-nil")
 	requireEqual(t, loaded.RunID, l.RunID, "LoadLedger RunID preserved")
 	requireEqual(t, len(loaded.Events), 1, "LoadLedger event count preserved")
-	requireEqual(t, loaded.Events[0].PlanetID, 1, "LoadLedger event PlanetID preserved")
+	requireEqual(t, loaded.Events[0].PlanetID, 1,
+		"LoadLedger event PlanetID preserved")
 	requireEqual(t, loaded.Events[0].EventType,
 		LedgerEventProvisionStart, "LoadLedger event type preserved")
 }
@@ -97,10 +95,11 @@ func TestLoadLedger_RoundTrip(t *testing.T) {
 func TestLoadLedger_MalformedFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ledger.yml")
-	writeTestFile(t, path, []byte("{ not valid yaml :::"))
+	err := os.WriteFile(path, []byte("{ not valid yaml :::"), 0644)
+	requireNoError(t, err, "LoadLedger write malformed file")
 
-	_, err := LoadLedger(path)
-	requireError(t, err, "LoadLedger malformed file")
+	_, loadErr := LoadLedger(path)
+	requireError(t, loadErr, "LoadLedger malformed file")
 }
 
 // -- Append ------------------------------------------------------------------
@@ -113,14 +112,14 @@ func TestAppend_SetsTimestamp(t *testing.T) {
 	requireNoError(t, err, "Append sets timestamp")
 
 	before := time.Now()
-	appendErr := l.Append(LedgerEvent{
+	requireNoError(t, l.Append(LedgerEvent{
 		PlanetID:  1,
 		EventType: LedgerEventProvisionStart,
-	})
+	}), "Append sets timestamp no error")
 	after := time.Now()
 
-	requireNoError(t, appendErr, "Append sets timestamp no error")
-	requireTrue(t, !l.Events[0].Timestamp.IsZero(), "Append timestamp non-zero")
+	requireTrue(t, !l.Events[0].Timestamp.IsZero(),
+		"Append timestamp non-zero")
 	requireTrue(t, !l.Events[0].Timestamp.Before(before),
 		"Append timestamp not before call")
 	requireTrue(t, !l.Events[0].Timestamp.After(after),
@@ -139,7 +138,6 @@ func TestAppend_FlushesToDisk(t *testing.T) {
 		EventType: LedgerEventProvisionStart,
 	}), "Append flush first event")
 
-	// read the file directly and verify event is present
 	loaded, loadErr := LoadLedger(l.Path())
 	requireNoError(t, loadErr, "Append flush load")
 	requireEqual(t, len(loaded.Events), 1, "Append flush event on disk")
@@ -168,7 +166,8 @@ func TestAppend_MultipleEvents(t *testing.T) {
 		}), "Append multiple events "+string(et))
 	}
 
-	requireEqual(t, len(l.Events), len(events), "Append multiple events count")
+	requireEqual(t, len(l.Events), len(events),
+		"Append multiple events count")
 	for i, et := range events {
 		requireEqual(t, l.Events[i].EventType, et,
 			"Append multiple events order "+string(et))
@@ -176,7 +175,7 @@ func TestAppend_MultipleEvents(t *testing.T) {
 }
 
 // TestAppend_ConcurrentSafe verifies that concurrent Append calls
-// from multiple goroutines do not panic or corrupt the ledger.
+// do not panic or corrupt the ledger.
 func TestAppend_ConcurrentSafe(t *testing.T) {
 	dir := t.TempDir()
 	l, err := NewLedger(dir, time.Now())
@@ -198,7 +197,6 @@ func TestAppend_ConcurrentSafe(t *testing.T) {
 			done <- struct{}{}
 		}()
 	}
-
 	for g := 0; g < goroutines; g++ {
 		<-done
 	}
@@ -226,8 +224,8 @@ func TestLastEventForPlanet_ReturnsLastEvent(t *testing.T) {
 		"LastEventForPlanet returns last event type")
 }
 
-// TestLastEventForPlanet_ReturnsNilForUnknownPlanet verifies that
-// nil is returned when no events exist for the planet.
+// TestLastEventForPlanet_ReturnsNilForUnknownPlanet verifies nil
+// is returned when no events exist for the planet.
 func TestLastEventForPlanet_ReturnsNilForUnknownPlanet(t *testing.T) {
 	dir := t.TempDir()
 	l, err := NewLedger(dir, time.Now())
@@ -235,8 +233,8 @@ func TestLastEventForPlanet_ReturnsNilForUnknownPlanet(t *testing.T) {
 
 	l.Append(LedgerEvent{PlanetID: 1, EventType: LedgerEventProvisionStart})
 
-	last := l.LastEventForPlanet(99)
-	requireTrue(t, last == nil, "LastEventForPlanet nil for unknown planet")
+	requireTrue(t, l.LastEventForPlanet(99) == nil,
+		"LastEventForPlanet nil for unknown planet")
 }
 
 // TestLastEventForPlanet_IsolatesByPlanetID verifies that events
@@ -259,7 +257,7 @@ func TestLastEventForPlanet_IsolatesByPlanetID(t *testing.T) {
 // -- PlanetCompleted ---------------------------------------------------------
 
 // TestPlanetCompleted_TrueWhenCollectComplete verifies that a planet
-// with a LedgerEventCollectComplete event is considered complete.
+// with a collect complete event is considered complete.
 func TestPlanetCompleted_TrueWhenCollectComplete(t *testing.T) {
 	dir := t.TempDir()
 	l, err := NewLedger(dir, time.Now())
@@ -269,11 +267,12 @@ func TestPlanetCompleted_TrueWhenCollectComplete(t *testing.T) {
 	l.Append(LedgerEvent{PlanetID: 1, EventType: LedgerEventLemmingsComplete})
 	l.Append(LedgerEvent{PlanetID: 1, EventType: LedgerEventCollectComplete})
 
-	requireTrue(t, l.PlanetCompleted(1), "PlanetCompleted true for collect complete")
+	requireTrue(t, l.PlanetCompleted(1),
+		"PlanetCompleted true for collect complete")
 }
 
 // TestPlanetCompleted_FalseWithoutCollectComplete verifies that a
-// planet without a collect complete event is not considered complete.
+// planet without a collect complete event is not complete.
 func TestPlanetCompleted_FalseWithoutCollectComplete(t *testing.T) {
 	dir := t.TempDir()
 	l, err := NewLedger(dir, time.Now())
@@ -282,17 +281,18 @@ func TestPlanetCompleted_FalseWithoutCollectComplete(t *testing.T) {
 	l.Append(LedgerEvent{PlanetID: 1, EventType: LedgerEventProvisionComplete})
 	l.Append(LedgerEvent{PlanetID: 1, EventType: LedgerEventLemmingsComplete})
 
-	requireFalse(t, l.PlanetCompleted(1), "PlanetCompleted false without collect complete")
+	requireFalse(t, l.PlanetCompleted(1),
+		"PlanetCompleted false without collect complete")
 }
 
-// TestPlanetCompleted_FalseForUnknownPlanet verifies that an unknown
-// planet ID returns false.
+// TestPlanetCompleted_FalseForUnknownPlanet verifies false for
+// an unknown planet ID.
 func TestPlanetCompleted_FalseForUnknownPlanet(t *testing.T) {
 	dir := t.TempDir()
 	l, err := NewLedger(dir, time.Now())
 	requireNoError(t, err, "PlanetCompleted false unknown")
-
-	requireFalse(t, l.PlanetCompleted(99), "PlanetCompleted false for unknown planet")
+	requireFalse(t, l.PlanetCompleted(99),
+		"PlanetCompleted false for unknown planet")
 }
 
 // -- PlanetProvisioned -------------------------------------------------------
@@ -319,19 +319,38 @@ func TestPlanetProvisioned_FalseWithoutProvisionComplete(t *testing.T) {
 
 	l.Append(LedgerEvent{PlanetID: 1, EventType: LedgerEventProvisionStart})
 
-	requireFalse(t, l.PlanetProvisioned(1), "PlanetProvisioned false without complete")
+	requireFalse(t, l.PlanetProvisioned(1),
+		"PlanetProvisioned false without complete")
 }
 
-// -- helpers -----------------------------------------------------------------
-
-func statFile(path string) (interface{}, error) {
-	import_os_stat, err := os.Stat(path)
-	return import_os_stat, err
+// TestPlanetProvisioned_FalseForUnknownPlanet verifies false for
+// an unknown planet ID.
+func TestPlanetProvisioned_FalseForUnknownPlanet(t *testing.T) {
+	dir := t.TempDir()
+	l, err := NewLedger(dir, time.Now())
+	requireNoError(t, err, "PlanetProvisioned false unknown")
+	requireFalse(t, l.PlanetProvisioned(99),
+		"PlanetProvisioned false for unknown planet")
 }
 
-func writeTestFile(t *testing.T, path string, data []byte) {
-	t.Helper()
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		t.Fatalf("writeTestFile %s: %v", path, err)
+// -- Benchmarks --------------------------------------------------------------
+
+// BenchmarkLedgerAppend measures Append throughput including the
+// disk flush on every call.
+func BenchmarkLedgerAppend(b *testing.B) {
+	dir := b.TempDir()
+	l, err := NewLedger(dir, time.Now())
+	if err != nil {
+		b.Fatalf("BenchmarkLedgerAppend: NewLedger: %v", err)
+	}
+	event := LedgerEvent{
+		PlanetID:  1,
+		Provider:  "aws",
+		Region:    "us-east-1",
+		EventType: LedgerEventProvisionStart,
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = l.Append(event)
 	}
 }
