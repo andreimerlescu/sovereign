@@ -438,27 +438,34 @@ func BenchmarkMicrocentsToDetailedDisplay(b *testing.B) {
 // BenchmarkEstimateCost measures full cost estimation throughput
 // against the mock pricing server with 5 planets.
 func BenchmarkEstimateCost(b *testing.B) {
-    srv := newMockPricingServer(b)
-    original := pricingAPIBaseURL
-    pricingAPIBaseURL = srv.URL + "/"
-    b.Cleanup(func() { pricingAPIBaseURL = original })
+	srv := newMockPricingServer(b)
+	original := pricingAPIBaseURL
+	pricingAPIBaseURL = srv.URL + "/"
+	b.Cleanup(func() { pricingAPIBaseURL = original })
 
-    cfg := testConfig()
-    cfg.Planets = 5
-    ctx, cancel := context.WithCancel(context.Background())
-    b.Cleanup(cancel)
+	cfg := testConfig()
+	cfg.Planets = 5
+	ctx, cancel := context.WithCancel(context.Background())
+	b.Cleanup(cancel)
 
-    s := &Sovereign{
-        cfg:    cfg,
-        ctx:    ctx,
-        cancel: cancel,
-    }
-    s.planets = s.initPlanets()
+	stateDir := b.TempDir()
+	ledger, err := NewLedger(stateDir, time.Now())
+	if err != nil {
+		b.Fatalf("BenchmarkEstimateCost: NewLedger: %v", err)
+	}
 
-    b.ResetTimer()
-    for i := 0; i < b.N; i++ {
-        s.estimateCost()
-    }
+	s := &Sovereign{
+		cfg:    cfg,
+		ctx:    ctx,
+		cancel: cancel,
+		ledger: ledger,
+	}
+	s.planets = s.initPlanets()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.estimateCost()
+	}
 }
 
 // -- Fuzz --------------------------------------------------------------------
