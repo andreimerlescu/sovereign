@@ -8,14 +8,12 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/andreimerlescu/sovereign/pkg/events"
 )
 
 // runLemmings deploys and executes lemmings on each planet concurrently.
 // Planets with status PlanetStatusLost are skipped.
-// A planet that fails to run lemmings within cfg.Until plus cfg.Ramp
-// plus a five minute collection overhead is marked PlanetStatusLost.
-// Lost planets during this phase are non-fatal -- collection continues
-// on remaining planets.
 func (s *Sovereign) runLemmings() error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -47,16 +45,17 @@ func (s *Sovereign) runLemmings() error {
 	return nil
 }
 
-// runLemmingsOnPlanet copies the lemmings config to the planet via SCP
-// and executes lemmings on the remote instance via SSH. It blocks until
-// lemmings completes or the run deadline is exceeded.
+// runLemmingsOnPlanet copies the plan file if configured and executes
+// lemmings on the remote instance via SSH.
 func (s *Sovereign) runLemmingsOnPlanet(planet *Planet) error {
 	fmt.Printf("  sovereign: starting lemmings on planet %d (%s)...\n",
 		planet.ID, planet.PublicIPv4)
 
-	s.ledger.Append(LedgerEvent{
+	s.bus.Emit(events.Event{
+		Kind:       events.KindLemmingsStart,
 		PlanetID:   planet.ID,
-		EventType:  LedgerEventLemmingsStart,
+		Provider:   s.provider.Name(),
+		Region:     planet.Region,
 		PublicIPv4: planet.PublicIPv4,
 	})
 
@@ -67,10 +66,12 @@ func (s *Sovereign) runLemmingsOnPlanet(planet *Planet) error {
 			planet.Status = PlanetStatusLost
 			planet.Error = err
 			planet.mu.Unlock()
-			s.ledger.Append(LedgerEvent{
-				PlanetID:  planet.ID,
-				EventType: LedgerEventLemmingsFailed,
-				Error:     err.Error(),
+			s.bus.Emit(events.Event{
+				Kind:     events.KindLemmingsFailed,
+				PlanetID: planet.ID,
+				Provider: s.provider.Name(),
+				Region:   planet.Region,
+				Err:      err,
 			})
 			return fmt.Errorf("planet %d: copy plan file: %w", planet.ID, err)
 		}
@@ -81,7 +82,6 @@ func (s *Sovereign) runLemmingsOnPlanet(planet *Planet) error {
 	ctx, cancel := context.WithTimeout(s.ctx, deadline)
 	defer cancel()
 
-	// execute lemmings on the remote instance via SSH
 	cmd := exec.CommandContext(ctx,
 		"ssh",
 		"-i", s.planetSSHKeyPath(planet),
@@ -98,17 +98,22 @@ func (s *Sovereign) runLemmingsOnPlanet(planet *Planet) error {
 		planet.Status = PlanetStatusLost
 		planet.Error = err
 		planet.mu.Unlock()
-		s.ledger.Append(LedgerEvent{
-			PlanetID:  planet.ID,
-			EventType: LedgerEventLemmingsFailed,
-			Error:     err.Error(),
+		s.bus.Emit(events.Event{
+			Kind:     events.KindLemmingsFailed,
+			PlanetID: planet.ID,
+			Provider: s.provider.Name(),
+			Region:   planet.Region,
+			Err:      err,
 		})
 		return fmt.Errorf("planet %d: lemmings run failed: %w", planet.ID, err)
 	}
 
-	s.ledger.Append(LedgerEvent{
-		PlanetID:  planet.ID,
-		EventType: LedgerEventLemmingsComplete,
+	s.bus.Emit(events.Event{
+		Kind:       events.KindLemmingsComplete,
+		PlanetID:   planet.ID,
+		Provider:   s.provider.Name(),
+		Region:     planet.Region,
+		PublicIPv4: planet.PublicIPv4,
 	})
 
 	fmt.Printf("  sovereign: planet %d lemmings run complete\n", planet.ID)
@@ -116,9 +121,7 @@ func (s *Sovereign) runLemmingsOnPlanet(planet *Planet) error {
 }
 
 // collectResults collects lemmings report files from each planet
-// via SCP as each one completes. Collection runs concurrently across
-// all non-lost planets. A collection failure marks the planet lost
-// but does not block collection from other planets.
+// via SCP concurrently.
 func (s *Sovereign) collectResults() error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -160,9 +163,11 @@ func (s *Sovereign) collectFromPlanet(planet *Planet) error {
 	fmt.Printf("  sovereign: collecting results from planet %d (%s)...\n",
 		planet.ID, planet.PublicIPv4)
 
-	s.ledger.Append(LedgerEvent{
+	s.bus.Emit(events.Event{
+		Kind:       events.KindCollectStart,
 		PlanetID:   planet.ID,
-		EventType:  LedgerEventCollectStart,
+		Provider:   s.provider.Name(),
+		Region:     planet.Region,
 		PublicIPv4: planet.PublicIPv4,
 	})
 
@@ -188,10 +193,12 @@ func (s *Sovereign) collectFromPlanet(planet *Planet) error {
 		planet.Status = PlanetStatusLost
 		planet.Error = err
 		planet.mu.Unlock()
-		s.ledger.Append(LedgerEvent{
-			PlanetID:  planet.ID,
-			EventType: LedgerEventCollectFailed,
-			Error:     err.Error(),
+		s.bus.Emit(events.Event{
+			Kind:     events.KindCollectFailed,
+			PlanetID: planet.ID,
+			Provider: s.provider.Name(),
+			Region:   planet.Region,
+			Err:      err,
 		})
 		return fmt.Errorf("planet %d: scp collect failed: %w", planet.ID, err)
 	}
@@ -202,9 +209,12 @@ func (s *Sovereign) collectFromPlanet(planet *Planet) error {
 	planet.ReportPath = localDir
 	planet.mu.Unlock()
 
-	s.ledger.Append(LedgerEvent{
-		PlanetID:  planet.ID,
-		EventType: LedgerEventCollectComplete,
+	s.bus.Emit(events.Event{
+		Kind:       events.KindCollectComplete,
+		PlanetID:   planet.ID,
+		Provider:   s.provider.Name(),
+		Region:     planet.Region,
+		PublicIPv4: planet.PublicIPv4,
 	})
 
 	fmt.Printf("  sovereign: planet %d results collected to %s\n",
@@ -273,8 +283,6 @@ func (s *Sovereign) planetReportDir(planet *Planet) string {
 }
 
 // planetSSHKeyPath returns the SSH private key path for a planet.
-// Matches the SSHKeyPath set in hclSpec so the same key terraform
-// used to provision the instance is used for SSH access.
 func (s *Sovereign) planetSSHKeyPath(planet *Planet) string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".ssh", "sovereign-planet.pem")
