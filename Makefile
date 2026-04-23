@@ -29,10 +29,11 @@ test:
 
 .PHONY: test-fuzz
 test-fuzz:
-	$(GO) test $(GOFLAGS) -fuzz=FuzzRenderTopobuilderYAML -fuzztime=$(FUZZTIME) .
-	$(GO) test $(GOFLAGS) -fuzz=FuzzMergeConfigFile       -fuzztime=$(FUZZTIME) .
-	$(GO) test $(GOFLAGS) -fuzz=FuzzDomainFromURL         -fuzztime=$(FUZZTIME) .
-	$(GO) test $(GOFLAGS) -fuzz=FuzzFormatBytes           -fuzztime=$(FUZZTIME) .
+	$(GO) test $(GOFLAGS) -fuzz=FuzzMergeConfigFile   -fuzztime=$(FUZZTIME) .
+	$(GO) test $(GOFLAGS) -fuzz=FuzzDomainFromURL      -fuzztime=$(FUZZTIME) .
+	$(GO) test $(GOFLAGS) -fuzz=FuzzFormatBytes        -fuzztime=$(FUZZTIME) .
+	$(GO) test $(GOFLAGS) -fuzz=FuzzDollarToMicrocents -fuzztime=$(FUZZTIME) .
+	$(GO) test $(GOFLAGS) -fuzz=FuzzMicrocentsToDisplay -fuzztime=$(FUZZTIME) .
 
 .PHONY: test-bench
 test-bench:
@@ -93,6 +94,7 @@ dry-run:
 		--pack 2 \
 		--until 10s \
 		--ramp 5s \
+		--instance t3.medium \
 		--dry-run
 
 .PHONY: run-local
@@ -104,6 +106,7 @@ run-local:
 		--pack 2 \
 		--until 10s \
 		--ramp 5s \
+		--instance t3.medium \
 		--yes \
 		--save-to /tmp/sovereign-test
 
@@ -123,6 +126,13 @@ show-state:
 	else \
 		echo "no sovereign state file found"; \
 	fi
+
+# -- Ledger ------------------------------------------------------------------
+
+.PHONY: show-ledger
+show-ledger:
+	@find ~/.sovereignd/runs -name "ledger.yml" | sort | tail -1 | xargs cat 2>/dev/null \
+		|| echo "no ledger found"
 
 # -- Help --------------------------------------------------------------------
 
@@ -157,6 +167,9 @@ help:
 	@echo "    make clean-state   remove .sovereignd state directory"
 	@echo "    make show-state    print current sovereign state file"
 	@echo ""
+	@echo "  Ledger"
+	@echo "    make show-ledger   print most recent run ledger"
+	@echo ""
 	@echo "  Run"
 	@echo "    make dry-run       estimate cost without provisioning"
 	@echo "    make run-local     run against localhost with minimal config"
@@ -164,4 +177,4 @@ help:
 	@echo "  Overrides"
 	@echo "    FUZZTIME=30s make test-fuzz"
 	@echo "    BENCHTIME=10s make test-bench"
-	@echo ""​​​​​​​​​​​​​​​​
+	@echo ""
