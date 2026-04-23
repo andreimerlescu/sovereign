@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +10,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/andreimerlescu/sovereign/pkg/events"
+	"github.com/andreimerlescu/sovereign/pkg/ledger"
 )
 
 // -- Constants ----------------------------------------------------------------
@@ -30,14 +32,6 @@ const (
 
 	// testZone is the default AWS availability zone used in tests.
 	testZone = "us-east-1a"
-
-	// mockHourlyRateMicrocents is the fixed mock pricing used in all
-	// cost estimation tests. Represents $0.50 per hour.
-	mockHourlyRateMicrocents int64 = 50_000
-
-	// mockHourlyRateDollars is the float64 dollar equivalent of
-	// mockHourlyRateMicrocents used in mock API responses.
-	mockHourlyRateDollars float64 = 0.50
 )
 
 // -- Commander interface ------------------------------------------------------
@@ -47,13 +41,10 @@ const (
 // real processes. Production code uses RealCommander. Tests use
 // MockCommander.
 type Commander interface {
-	// Run executes the named command with the provided arguments.
-	// Returns stdout, stderr, and any execution error.
 	Run(ctx context.Context, name string, args ...string) (stdout, stderr string, err error)
 }
 
 // RealCommander executes real OS commands via os/exec.
-// Used in production sovereign invocations.
 type RealCommander struct{}
 
 // Run executes the named command and returns its combined output.
@@ -63,12 +54,6 @@ func (r *RealCommander) Run(ctx context.Context, name string, args ...string) (s
 
 // MockCommander is a test double for Commander that returns
 // pre-configured responses without executing real processes.
-// Each registered command key matches "name args[0]" and returns
-// the configured stdout, stderr, and error.
-//
-// If a command is not registered, MockCommander returns a generic
-// success response so tests only need to configure the commands
-// they care about.
 type MockCommander struct {
 	mu       sync.Mutex
 	calls    []MockCall
@@ -103,13 +88,11 @@ func (m *MockCommander) Register(name string, handler MockHandler) {
 }
 
 // Run records the call and returns the registered handler response.
-// Returns a generic success if no handler is registered for name.
 func (m *MockCommander) Run(ctx context.Context, name string, args ...string) (string, string, error) {
 	m.mu.Lock()
 	m.calls = append(m.calls, MockCall{Name: name, Args: args})
 	handler, ok := m.handlers[name]
 	m.mu.Unlock()
-
 	if !ok {
 		return "ok", "", nil
 	}
@@ -203,6 +186,7 @@ func testPlanet(id int) *Planet {
 		ID:           id,
 		Region:       testRegion,
 		InstanceType: testInstanceType,
+		RemoteUser:   defaultRemoteUser,
 		Status:       PlanetStatusPending,
 	}
 }
@@ -214,6 +198,7 @@ func testProvisionedPlanet(id int) *Planet {
 		ID:            id,
 		Region:        testRegion,
 		InstanceType:  testInstanceType,
+		RemoteUser:    defaultRemoteUser,
 		PublicIPv4:    fmt.Sprintf("54.%d.%d.1", id, id*10),
 		InstanceID:    fmt.Sprintf("i-0000000000000000%d", id),
 		Status:        PlanetStatusRunning,
@@ -230,6 +215,7 @@ func testDonePlanet(t *testing.T, id int) *Planet {
 		ID:            id,
 		Region:        testRegion,
 		InstanceType:  testInstanceType,
+		RemoteUser:    defaultRemoteUser,
 		PublicIPv4:    fmt.Sprintf("54.%d.%d.1", id, id*10),
 		InstanceID:    fmt.Sprintf("i-0000000000000000%d", id),
 		Status:        PlanetStatusDone,
@@ -245,6 +231,7 @@ func testLostPlanet(id int) *Planet {
 		ID:           id,
 		Region:       testRegion,
 		InstanceType: testInstanceType,
+		RemoteUser:   defaultRemoteUser,
 		Status:       PlanetStatusLost,
 		Error:        fmt.Errorf("simulated provisioning failure"),
 	}
@@ -252,8 +239,9 @@ func testLostPlanet(id int) *Planet {
 
 // -- Sovereign helpers --------------------------------------------------------
 
-// testSovereign constructs a Sovereign with a test config and a
-// temp directory for state.
+// testSovereign constructs a Sovereign with a test config, a temp
+// directory for state, an initialized event bus, and a ledger wired
+// as a bus subscriber.
 func testSovereign(t *testing.T) *Sovereign {
 	t.Helper()
 	cfg := testConfig()
@@ -263,10 +251,14 @@ func testSovereign(t *testing.T) *Sovereign {
 	stateDir := t.TempDir()
 	stateFile := filepath.Join(stateDir, "state.yml")
 
-	ledger, err := NewLedger(stateDir, time.Now())
+	bus := events.NewEventBus()
+	t.Cleanup(bus.Close)
+
+	l, err := ledger.NewLedger(stateDir, time.Now())
 	if err != nil {
-		t.Fatalf("testSovereign: NewLedger: %v", err)
+		t.Fatalf("testSovereign: ledger.NewLedger: %v", err)
 	}
+	bus.Subscribe(l.AsSubscriber())
 
 	s := &Sovereign{
 		cfg:       cfg,
@@ -274,7 +266,8 @@ func testSovereign(t *testing.T) *Sovereign {
 		cancel:    cancel,
 		startedAt: time.Now(),
 		stateFile: stateFile,
-		ledger:    ledger,
+		bus:       bus,
+		ledger:    l,
 	}
 	s.planets = s.initPlanets()
 	s.state = &SovereignState{
@@ -298,7 +291,7 @@ func testSovereignWithPlanets(t *testing.T, planets []*Planet) *Sovereign {
 
 // -- Environment helpers ------------------------------------------------------
 
-// setTestEnv sets all required sovereign environment variables using
+// setTestEnv sets required sovereign environment variables using
 // t.Setenv so they are automatically restored after each test.
 func setTestEnv(t *testing.T) {
 	t.Helper()
@@ -310,9 +303,14 @@ func setTestEnv(t *testing.T) {
 
 // -- Pricing mock server ------------------------------------------------------
 
-// newMockPricingServer starts an httptest.Server that returns a fixed
-// pricing response for any instance type and region combination.
-func newMockPricingServer(t *testing.T) *httptest.Server {
+// newMockPricingJSONServer starts an httptest.Server that returns a
+// fixed pricing JSON response for any instance type and region.
+// Used by cost_test.go to test estimateCost against a real HTTP server
+// without hitting instances.vantage.sh.
+//
+// The response format matches what VantagePricer expects from the API.
+// instance_type and region are reflected from the query parameters.
+func newMockPricingJSONServer(t *testing.T, hourlyRateDollars float64) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		instanceType := r.URL.Query().Get("instance_type")
@@ -323,38 +321,21 @@ func newMockPricingServer(t *testing.T) *httptest.Server {
 		if region == "" {
 			region = testRegion
 		}
-		response := []vantageResponse{
-			{
-				InstanceType: instanceType,
-				Region:       region,
-				OnDemand:     mockHourlyRateDollars,
-				Spot:         mockHourlyRateDollars * 0.3,
-			},
-		}
+		body := fmt.Sprintf(
+			`[{"instance_type":%q,"region":%q,"on_demand":%f}]`,
+			instanceType, region, hourlyRateDollars,
+		)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(response)
+		fmt.Fprint(w, body)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
 }
 
-// newMockPricingServerEmpty starts an httptest.Server that returns
-// an empty pricing response.
-func newMockPricingServerEmpty(t *testing.T) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode([]vantageResponse{})
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
-// newMockPricingServerError starts an httptest.Server that returns
+// newMockPricingJSONServerError starts an httptest.Server that returns
 // HTTP 500 for all requests.
-func newMockPricingServerError(t *testing.T) *httptest.Server {
+func newMockPricingJSONServerError(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -493,10 +474,14 @@ func benchmarkSovereign(b *testing.B) *Sovereign {
 	stateDir := b.TempDir()
 	stateFile := filepath.Join(stateDir, "state.yml")
 
-	ledger, err := NewLedger(stateDir, time.Now())
+	bus := events.NewEventBus()
+	b.Cleanup(bus.Close)
+
+	l, err := ledger.NewLedger(stateDir, time.Now())
 	if err != nil {
-		b.Fatalf("benchmarkSovereign: NewLedger: %v", err)
+		b.Fatalf("benchmarkSovereign: ledger.NewLedger: %v", err)
 	}
+	bus.Subscribe(l.AsSubscriber())
 
 	s := &Sovereign{
 		cfg:       cfg,
@@ -504,7 +489,8 @@ func benchmarkSovereign(b *testing.B) *Sovereign {
 		cancel:    cancel,
 		startedAt: time.Now(),
 		stateFile: stateFile,
-		ledger:    ledger,
+		bus:       bus,
+		ledger:    l,
 	}
 	s.planets = s.initPlanets()
 	s.state = &SovereignState{
