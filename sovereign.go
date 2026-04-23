@@ -14,8 +14,6 @@ import (
 	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
 	tfaws "github.com/andreimerlescu/sovereign/pkg/terraform_provider/aws"
 	tfdo "github.com/andreimerlescu/sovereign/pkg/terraform_provider/do"
-	tfgcp "github.com/andreimerlescu/sovereign/pkg/terraform_provider/gcp"
-	tfoci "github.com/andreimerlescu/sovereign/pkg/terraform_provider/oci"
 	tfovh "github.com/andreimerlescu/sovereign/pkg/terraform_provider/ovh"
 )
 
@@ -397,10 +395,6 @@ func newProvider(cfg SovereignConfig) (tfprovider.TerraformProvider, error) {
 		return tfdo.New()
 	case "ovh":
 		return tfovh.New()
-	case "gcp":
-		return &tfgcp.TerraformProviderGCP{}, nil
-	case "oci":
-		return &tfoci.TerraformProviderOCI{}, nil
 	default:
 		return nil, fmt.Errorf("sovereign: unknown provider %q -- supported: aws, digitalocean, ovh",
 			cfg.Provider)
