@@ -24,8 +24,7 @@ and destroys the infrastructure when done.
         |-- pkg/terraform_provider/oci/  stub -- enterprise on-demand
         |-- pkg/terraform_provider/gcp/  stub -- enterprise on-demand
 
-Sovereign calls terraform directly via exec. No topobuilder dependency.
-No Docker. No load balancer. No DNS.
+Sovereign calls terraform directly via exec. No Docker. No load balancer. No DNS.
 
 ---
 
@@ -490,10 +489,6 @@ Do not add loadState or saveState to sovereign.go. state.go owns
 these methods.
 
 Do not add aggregateReport to lemmings.go. report.go owns it.
-
-Do not reference topobuilder anywhere. It has been replaced entirely
-by direct terraform invocation through the TerraformProvider interface
-and pkg/terraform_exeggutor.
 
 Do not add implementation logic to pkg/terraform_provider/provider.go.
 It is a types and interface definition file only.
