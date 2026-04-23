@@ -2,20 +2,23 @@ package aws
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
+	exeggutor "github.com/andreimerlescu/sovereign/pkg/terraform_exeggutor"
 )
 
+// resourceType is the terraform resource type that ParseStatus searches
+// for to determine whether an AWS EC2 instance has been provisioned.
+const resourceType = "aws_instance"
+
 // TerraformProviderAWS implements tfprovider.TerraformProvider for AWS.
-// The struct is stateless with respect to individual planets -- all
+// The struct is stateless with respect to individual planets. All
 // per-planet data flows through PlanetSpec and HCLSpec arguments.
 // Credentials are resolved once at construction and stored here.
 type TerraformProviderAWS struct {
@@ -23,7 +26,7 @@ type TerraformProviderAWS struct {
 }
 
 // New constructs a TerraformProviderAWS with resolved credentials.
-// Returns an error if required environment variables are missing.
+// Returns an error if any required environment variable is missing.
 func New() (*TerraformProviderAWS, error) {
 	creds, err := Resolve()
 	if err != nil {
@@ -38,154 +41,61 @@ func (p *TerraformProviderAWS) Name() string {
 }
 
 // Validate checks that credentials are present and the terraform
-// binary is available in PATH. Called once before any provisioning.
+// binary is available in PATH.
 func (p *TerraformProviderAWS) Validate() error {
 	if p.creds.AccessKey == "" || p.creds.AccessSecretKey == "" {
 		return fmt.Errorf("aws: credentials not resolved -- call New()")
 	}
-	if _, err := exec.LookPath("terraform"); err != nil {
-		return fmt.Errorf("aws: terraform binary not found in PATH")
-	}
-	return nil
+	return exeggutor.Validate()
 }
 
 // RenderHCL renders all HCL files for the planet described by spec
-// and writes them to spec.WorkDir/terraform/. Credentials are injected
-// into the spec before rendering so the provider block is complete.
+// and writes them to spec.WorkDir/terraform/.
 func (p *TerraformProviderAWS) RenderHCL(spec tfprovider.HCLSpec) error {
-	// inject credentials into the spec before passing to the renderer
-	// HCLSpec carries AccessKey/SecretKey for the provider.tf template
-	spec.AccessKey = p.creds.AccessKey
-	spec.SecretKey = p.creds.AccessSecretKey
 	return renderHCL(spec)
 }
 
 // Init runs terraform init in the planet's terraform directory.
 func (p *TerraformProviderAWS) Init(ctx context.Context, spec tfprovider.PlanetSpec) error {
-	return p.tf(ctx, spec, "init", "-no-color")
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).Init(ctx)
 }
 
-// InitOrApply runs terraform init if the .terraform directory does not
-// exist, then runs apply. Safe to call on an already-initialized planet.
+// InitOrApply runs terraform init if not already initialized then apply.
 func (p *TerraformProviderAWS) InitOrApply(ctx context.Context, spec tfprovider.PlanetSpec) error {
-	terraformDir := filepath.Join(spec.WorkDir, "terraform")
-	dotTerraform := filepath.Join(terraformDir, ".terraform")
-	if _, err := os.Stat(dotTerraform); os.IsNotExist(err) {
-		if err := p.Init(ctx, spec); err != nil {
-			return err
-		}
-	}
-	return p.Apply(ctx, spec)
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).InitOrApply(ctx)
 }
 
 // Apply runs terraform apply in the planet's terraform directory.
 func (p *TerraformProviderAWS) Apply(ctx context.Context, spec tfprovider.PlanetSpec) error {
-	return p.tf(ctx, spec, "apply", "-auto-approve", "-no-color")
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).Apply(ctx)
 }
 
 // Destroy runs terraform destroy in the planet's terraform directory.
 func (p *TerraformProviderAWS) Destroy(ctx context.Context, spec tfprovider.PlanetSpec) error {
-	return p.tf(ctx, spec, "destroy", "-auto-approve", "-no-color")
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).Destroy(ctx)
 }
 
-// Output runs terraform output -json and parses the result into
-// a ProvisionOutput. Returns an error if any expected output is missing.
+// Output runs terraform output -json and parses instance_id,
+// public_ipv4, private_ipv4 into a ProvisionOutput.
 func (p *TerraformProviderAWS) Output(ctx context.Context, spec tfprovider.PlanetSpec) (*tfprovider.ProvisionOutput, error) {
-	terraformDir := filepath.Join(spec.WorkDir, "terraform")
-	cmd := exec.CommandContext(ctx, "terraform", "output", "-json", "-no-color")
-	cmd.Dir = terraformDir
-	cmd.Env = p.env()
-
-	out, err := cmd.Output()
+	exe := exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env())
+	result, err := exe.ParseOutput(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("aws: terraform output planet %d: %w", spec.PlanetID, err)
+		return nil, err
 	}
-
-	// terraform output -json returns a map of output name ->
-	// { "value": <value>, "type": <type> }
-	var raw map[string]struct {
-		Value string `json:"value"`
-	}
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("aws: parse terraform output planet %d: %w", spec.PlanetID, err)
-	}
-
-	result := &tfprovider.ProvisionOutput{
-		Region: spec.Region,
-		Zone:   spec.Zone,
-	}
-
-	var missing []string
-	if v, ok := raw["instance_id"]; ok {
-		result.InstanceID = v.Value
-		result.ProviderRef = v.Value
-	} else {
-		missing = append(missing, "instance_id")
-	}
-	if v, ok := raw["public_ipv4"]; ok {
-		result.PublicIPv4 = v.Value
-	} else {
-		missing = append(missing, "public_ipv4")
-	}
-	if v, ok := raw["private_ipv4"]; ok {
-		result.PrivateIPv4 = v.Value
-	} else {
-		missing = append(missing, "private_ipv4")
-	}
-
-	if len(missing) > 0 {
-		return nil, fmt.Errorf("aws: missing terraform outputs for planet %d: %v",
-			spec.PlanetID, missing)
-	}
-
-	return result, nil
+	return &tfprovider.ProvisionOutput{
+		InstanceID:  result.InstanceID,
+		PublicIPv4:  result.PublicIPv4,
+		PrivateIPv4: result.PrivateIPv4,
+		Region:      spec.Region,
+		Zone:        spec.Zone,
+		ProviderRef: result.InstanceID,
+	}, nil
 }
 
-// Status runs terraform show -json and reports the current lifecycle
-// status of the planet's managed instance resource.
+// Status checks the current terraform lifecycle status for the planet.
 func (p *TerraformProviderAWS) Status(ctx context.Context, spec tfprovider.PlanetSpec) (tfprovider.LifecycleStatus, error) {
-	stateFile := filepath.Join(spec.WorkDir, "terraform", "terraform.tfstate")
-	if _, err := os.Stat(stateFile); os.IsNotExist(err) {
-		return tfprovider.LifecycleUninitialized, nil
-	}
-
-	terraformDir := filepath.Join(spec.WorkDir, "terraform")
-	cmd := exec.CommandContext(ctx, "terraform", "show", "-json", "-no-color")
-	cmd.Dir = terraformDir
-	cmd.Env = p.env()
-
-	out, err := cmd.Output()
-	if err != nil {
-		return tfprovider.LifecycleFailed, fmt.Errorf("aws: terraform show planet %d: %w",
-			spec.PlanetID, err)
-	}
-
-	// look for the managed instance resource in the state
-	var state struct {
-		Values struct {
-			RootModule struct {
-				Resources []struct {
-					Type   string `json:"type"`
-					Values struct {
-						ID string `json:"id"`
-					} `json:"values"`
-				} `json:"resources"`
-			} `json:"root_module"`
-		} `json:"values"`
-	}
-
-	if err := json.Unmarshal(out, &state); err != nil {
-		return tfprovider.LifecycleFailed, fmt.Errorf("aws: parse terraform show planet %d: %w",
-			spec.PlanetID, err)
-	}
-
-	for _, r := range state.Values.RootModule.Resources {
-		if r.Type == "aws_instance" && r.Values.ID != "" {
-			return tfprovider.LifecycleApplied, nil
-		}
-	}
-
-	return tfprovider.LifecycleUninitialized, nil
+	return exeggutor.New(p.Name(), spec.PlanetID, spec.WorkDir, p.env()).ParseStatus(ctx, resourceType)
 }
 
 // StateBackend returns the local terraform state file path for this planet.
@@ -194,7 +104,7 @@ func (p *TerraformProviderAWS) StateBackend(spec tfprovider.PlanetSpec) (string,
 }
 
 // LoadState reads the provider state file from the planet's work directory.
-// Returns nil, nil if no state file exists -- not an error.
+// Returns nil, nil if no state file exists.
 func (p *TerraformProviderAWS) LoadState(spec tfprovider.PlanetSpec) (*tfprovider.ProviderState, error) {
 	path := p.stateFilePath(spec)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -212,7 +122,7 @@ func (p *TerraformProviderAWS) LoadState(spec tfprovider.PlanetSpec) (*tfprovide
 }
 
 // SaveState writes the provider state to disk after every lifecycle
-// transition. The state directory is created if it does not exist.
+// transition.
 func (p *TerraformProviderAWS) SaveState(spec tfprovider.PlanetSpec, state *tfprovider.ProviderState) error {
 	state.LastTransition = time.Now().UTC()
 	data, err := yaml.Marshal(state)
@@ -229,34 +139,16 @@ func (p *TerraformProviderAWS) SaveState(spec tfprovider.PlanetSpec, state *tfpr
 	return nil
 }
 
-// UnloadState removes the in-memory reference only.
-// The file on disk is not deleted -- it persists until the planet
-// is destroyed and sovereign's cleanup phase removes it.
-// Since TerraformProviderAWS is stateless, this is a no-op --
-// there is no in-memory state to clear.
+// UnloadState is a no-op. TerraformProviderAWS is stateless.
 func (p *TerraformProviderAWS) UnloadState(_ tfprovider.PlanetSpec) error {
 	return nil
 }
 
 // -- private helpers ---------------------------------------------------------
 
-// tf runs a terraform subcommand in the planet's terraform directory.
-func (p *TerraformProviderAWS) tf(ctx context.Context, spec tfprovider.PlanetSpec, args ...string) error {
-	terraformDir := filepath.Join(spec.WorkDir, "terraform")
-	cmd := exec.CommandContext(ctx, "terraform", args...)
-	cmd.Dir = terraformDir
-	cmd.Env = p.env()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("aws: terraform %s planet %d: %w", args[0], spec.PlanetID, err)
-	}
-	return nil
-}
-
 // env returns the environment for terraform subprocess calls.
-// Credentials are passed as environment variables rather than
-// written into the HCL so they do not appear in terraform logs.
+// Credentials are passed as environment variables so they never
+// appear in HCL files or backup directories.
 func (p *TerraformProviderAWS) env() []string {
 	return []string{
 		"PATH=" + os.Getenv("PATH"),
