@@ -1,271 +1,422 @@
 package main
 
 import (
-    "context"
-    "fmt"
-    "os"
-    "os/exec"
-    "path/filepath"
-    "sync"
-    "time"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
 )
 
-// provisionTerrain renders a topobuilder YAML config for each planet
-// and calls topobuilder to provision the AWS infrastructure.
-//
+// provisionTerrain provisions all planets using the configured provider.
 // The first planet is provisioned alone. Remaining planets are
-// provisioned in concurrent batches of 3 following the same
-// semaphore pattern topobuilder uses internally for zones.
-//
-// A planet that fails to provision within cfg.ProvisionTimeout
-// is marked PlanetStatusLost. Lost planets are skipped during
-// lemmings deployment and collection but are noted in the final
-// report. The run continues with remaining planets.
+// provisioned concurrently in batches of 3.
+// Lost planets are non-fatal -- the run continues with surviving planets.
 func (s *Sovereign) provisionTerrain() error {
-    if len(s.planets) == 0 {
-        return fmt.Errorf("no planets to provision")
-    }
+	if len(s.planets) == 0 {
+		return fmt.Errorf("no planets to provision")
+	}
 
-    // Provision first planet alone -- topobuilder requires the
-    // first zone to complete before broadcasting to remaining zones.
-    // Sovereign mirrors this pattern at the planet level.
-    if err := s.provisionPlanet(s.planets[0]); err != nil {
-        return fmt.Errorf("sovereign: first planet failed to provision: %w", err)
-    }
+	if err := s.resumeOrProvision(s.planets[0]); err != nil {
+		return fmt.Errorf("sovereign: first planet failed to provision: %w", err)
+	}
 
-    if len(s.planets) == 1 {
-        return nil
-    }
+	if len(s.planets) == 1 {
+		return nil
+	}
 
-    // Provision remaining planets in batches of 3
-    remaining := s.planets[1:]
-    sem := make(chan struct{}, 3)
-    var wg sync.WaitGroup
-    var mu sync.Mutex
-    var errs []error
+	remaining := s.planets[1:]
+	sem := make(chan struct{}, 3)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
 
-    for _, planet := range remaining {
-        planet := planet
-        wg.Add(1)
-        sem <- struct{}{}
-        go func() {
-            defer wg.Done()
-            defer func() { <-sem }()
-            if err := s.provisionPlanet(planet); err != nil {
-                mu.Lock()
-                errs = append(errs, err)
-                mu.Unlock()
-            }
-        }()
-    }
-    wg.Wait()
+	for _, planet := range remaining {
+		planet := planet
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := s.resumeOrProvision(planet); err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
 
-    // Lost planets are non-fatal -- report them but continue
-    for _, err := range errs {
-        fmt.Printf("  sovereign: warning: planet provisioning error: %v\n", err)
-    }
+	for _, err := range errs {
+		fmt.Printf("  sovereign: warning: planet provisioning error: %v\n", err)
+	}
 
-    return nil
+	return nil
 }
 
-// provisionPlanet renders the topobuilder YAML for a single planet,
-// writes it to a temp directory, and invokes the topobuilder binary.
-//
-// On success the planet's PublicIPv4 and InstanceID are populated
-// from topobuilder's state output and the planet status is set to
-// PlanetStatusRunning.
-//
-// On failure or timeout the planet status is set to PlanetStatusLost.
+// resumeOrProvision checks the ledger and provider state to determine
+// whether a planet needs fresh provisioning or can resume from a
+// previous interrupted run.
+func (s *Sovereign) resumeOrProvision(planet *Planet) error {
+	// already completed in a previous run -- skip entirely
+	if s.ledger.PlanetCompleted(planet.ID) {
+		fmt.Printf("  sovereign: planet %d already completed -- skipping\n", planet.ID)
+		planet.mu.Lock()
+		planet.Status = PlanetStatusDone
+		planet.mu.Unlock()
+		return nil
+	}
+
+	// already provisioned -- hydrate from provider state and continue
+	if s.ledger.PlanetProvisioned(planet.ID) {
+		fmt.Printf("  sovereign: planet %d already provisioned -- resuming\n", planet.ID)
+		return s.hydrateFromProviderState(planet)
+	}
+
+	// check provider state for partial progress
+	spec := s.planetSpec(planet)
+	state, err := s.provider.LoadState(spec)
+	if err != nil {
+		return fmt.Errorf("planet %d: load provider state: %w", planet.ID, err)
+	}
+
+	if state != nil {
+		switch state.Status {
+		case tfprovider.LifecycleApplied:
+			// instance is running -- hydrate and continue
+			return s.hydratePlanetFromState(planet, state)
+
+		case tfprovider.LifecycleApplying, tfprovider.LifecycleInterrupted:
+			// interrupted mid-apply -- let InitOrApply sort it out
+			fmt.Printf("  sovereign: planet %d interrupted -- resuming apply\n", planet.ID)
+			return s.applyAndHydrate(planet)
+
+		case tfprovider.LifecycleInitialized:
+			// init succeeded but apply never ran
+			fmt.Printf("  sovereign: planet %d initialized -- running apply\n", planet.ID)
+			return s.applyAndHydrate(planet)
+		}
+	}
+
+	// no usable state -- provision from scratch
+	return s.provisionPlanet(planet)
+}
+
+// provisionPlanet renders HCL, runs terraform init and apply,
+// reads the output, and marks the planet running.
 func (s *Sovereign) provisionPlanet(planet *Planet) error {
-    planet.mu.Lock()
-    planet.Status = PlanetStatusProvisioning
-    planet.ProvisionedAt = time.Now()
-    planet.mu.Unlock()
+	planet.mu.Lock()
+	planet.Status = PlanetStatusProvisioning
+	planet.ProvisionedAt = time.Now()
+	planet.mu.Unlock()
 
-    fmt.Printf("  sovereign: provisioning planet %d in %s...\n",
-        planet.ID, planet.Region)
+	fmt.Printf("  sovereign: provisioning planet %d in %s...\n",
+		planet.ID, planet.Region)
 
-    // Render the topobuilder YAML for this planet
-    configPath, err := s.renderTopobuilderConfig(planet)
-    if err != nil {
-        planet.mu.Lock()
-        planet.Status = PlanetStatusLost
-        planet.Error = err
-        planet.mu.Unlock()
-        return fmt.Errorf("planet %d: render topobuilder config: %w", planet.ID, err)
-    }
+	s.ledger.Append(LedgerEvent{
+		PlanetID:  planet.ID,
+		Provider:  s.provider.Name(),
+		Region:    planet.Region,
+		EventType: LedgerEventProvisionStart,
+	})
 
-    // Invoke topobuilder with a provision timeout
-    ctx, cancel := context.WithTimeout(s.ctx, s.cfg.ProvisionTimeout)
-    defer cancel()
+	// render HCL into planet work dir
+	if err := s.provider.RenderHCL(s.hclSpec(planet)); err != nil {
+		return s.markLost(planet, LedgerEventProvisionFailed, err)
+	}
 
-    stateFile := filepath.Join(
-        filepath.Dir(configPath),
-        fmt.Sprintf("planet-%d.tbstate", planet.ID),
-    )
+	spec := s.planetSpec(planet)
 
-    cmd := exec.CommandContext(ctx, "topobuilder",
-        "-config", configPath,
-        "-state", stateFile,
-        "-mode", "production",
-    )
-    cmd.Stdout = os.Stdout
-    cmd.Stderr = os.Stderr
+	// save initialized state
+	if err := s.saveProviderState(planet, tfprovider.LifecycleUninitialized, nil); err != nil {
+		return s.markLost(planet, LedgerEventProvisionFailed, err)
+	}
 
-    if err := cmd.Run(); err != nil {
-        planet.mu.Lock()
-        planet.Status = PlanetStatusLost
-        planet.Error = err
-        planet.mu.Unlock()
-        return fmt.Errorf("planet %d: topobuilder provision failed: %w", planet.ID, err)
-    }
+	// terraform init
+	s.ledger.Append(LedgerEvent{
+		PlanetID:  planet.ID,
+		EventType: LedgerEventInitStart,
+	})
+	if err := s.provider.Init(s.ctx, spec); err != nil {
+		s.saveProviderState(planet, tfprovider.LifecycleFailed, nil)
+		return s.markLost(planet, LedgerEventInitFailed, err)
+	}
+	s.ledger.Append(LedgerEvent{
+		PlanetID:  planet.ID,
+		EventType: LedgerEventInitComplete,
+	})
+	s.saveProviderState(planet, tfprovider.LifecycleInitialized, nil)
 
-    // Read planet IP and instance ID from topobuilder state file
-    if err := s.hydratePlanetFromState(planet, stateFile); err != nil {
-        planet.mu.Lock()
-        planet.Status = PlanetStatusLost
-        planet.Error = err
-        planet.mu.Unlock()
-        return fmt.Errorf("planet %d: read topobuilder state: %w", planet.ID, err)
-    }
-
-    planet.mu.Lock()
-    planet.Status = PlanetStatusRunning
-    planet.mu.Unlock()
-
-    fmt.Printf("  sovereign: planet %d provisioned -- %s (%s)\n",
-        planet.ID, planet.PublicIPv4, planet.Region)
-
-    return nil
+	return s.applyAndHydrate(planet)
 }
 
-// destroyTerrain calls topobuilder destroy for each planet concurrently.
-// All planets are destroyed regardless of individual failures.
-//
-// A planet that fails to terminate within cfg.TerminateTimeout is
-// logged with its InstanceID for manual intervention. Sovereign
-// exits with a non-zero status if any planet fails to terminate.
+// applyAndHydrate runs terraform apply, reads output, and marks
+// the planet running. Called both on fresh provision and on resume.
+func (s *Sovereign) applyAndHydrate(planet *Planet) error {
+	spec := s.planetSpec(planet)
+
+	s.saveProviderState(planet, tfprovider.LifecycleApplying, nil)
+	s.ledger.Append(LedgerEvent{
+		PlanetID:  planet.ID,
+		EventType: LedgerEventApplyStart,
+	})
+
+	if err := s.provider.Apply(s.ctx, spec); err != nil {
+		s.saveProviderState(planet, tfprovider.LifecycleInterrupted, nil)
+		return s.markLost(planet, LedgerEventApplyFailed, err)
+	}
+
+	s.ledger.Append(LedgerEvent{
+		PlanetID:  planet.ID,
+		EventType: LedgerEventApplyComplete,
+	})
+
+	out, err := s.provider.Output(s.ctx, spec)
+	if err != nil {
+		s.saveProviderState(planet, tfprovider.LifecycleFailed, nil)
+		return s.markLost(planet, LedgerEventProvisionFailed, err)
+	}
+
+	return s.hydratePlanetFromOutput(planet, out)
+}
+
+// hydratePlanetFromOutput populates planet fields from a ProvisionOutput
+// and marks the planet running.
+func (s *Sovereign) hydratePlanetFromOutput(planet *Planet, out *tfprovider.ProvisionOutput) error {
+	planet.mu.Lock()
+	planet.PublicIPv4 = out.PublicIPv4
+	planet.InstanceID = out.InstanceID
+	planet.Status = PlanetStatusRunning
+	planet.mu.Unlock()
+
+	s.saveProviderState(planet, tfprovider.LifecycleApplied, out)
+	s.ledger.Append(LedgerEvent{
+		PlanetID:   planet.ID,
+		EventType:  LedgerEventProvisionComplete,
+		InstanceID: out.InstanceID,
+		PublicIPv4: out.PublicIPv4,
+	})
+
+	fmt.Printf("  sovereign: planet %d provisioned -- %s (%s)\n",
+		planet.ID, out.PublicIPv4, planet.Region)
+
+	return nil
+}
+
+// hydratePlanetFromState populates planet fields from an existing
+// ProviderState. Used when resuming a run where the planet was
+// already successfully provisioned.
+func (s *Sovereign) hydratePlanetFromState(planet *Planet, state *tfprovider.ProviderState) error {
+	planet.mu.Lock()
+	planet.PublicIPv4 = state.PublicIPv4
+	planet.InstanceID = state.InstanceID
+	planet.Status = PlanetStatusRunning
+	planet.mu.Unlock()
+
+	fmt.Printf("  sovereign: planet %d resumed -- %s (%s)\n",
+		planet.ID, state.PublicIPv4, planet.Region)
+
+	return nil
+}
+
+// hydrateFromProviderState loads the provider state file and
+// hydrates the planet from it. Used when the ledger indicates
+// a planet was provisioned but sovereign needs the IP and instance ID.
+func (s *Sovereign) hydrateFromProviderState(planet *Planet) error {
+	spec := s.planetSpec(planet)
+	state, err := s.provider.LoadState(spec)
+	if err != nil {
+		return fmt.Errorf("planet %d: load provider state for resume: %w", planet.ID, err)
+	}
+	if state == nil {
+		return fmt.Errorf("planet %d: ledger says provisioned but no provider state found",
+			planet.ID)
+	}
+	return s.hydratePlanetFromState(planet, state)
+}
+
+// destroyTerrain destroys all provisioned planets concurrently.
+// All planets are attempted regardless of individual failures.
+// Returns an error if any planet fails to terminate.
 func (s *Sovereign) destroyTerrain() error {
-    var wg sync.WaitGroup
-    var mu sync.Mutex
-    var errs []error
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
 
-    for _, planet := range s.planets {
-        planet := planet
-        if planet.Status == PlanetStatusLost &&
-            planet.InstanceID == "" {
-            // Planet never provisioned -- nothing to destroy
-            continue
-        }
-        wg.Add(1)
-        go func() {
-            defer wg.Done()
-            if err := s.destroyPlanet(planet); err != nil {
-                mu.Lock()
-                errs = append(errs, err)
-                mu.Unlock()
-            }
-        }()
-    }
-    wg.Wait()
+	for _, planet := range s.planets {
+		planet := planet
+		if planet.Status == PlanetStatusLost && planet.InstanceID == "" {
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := s.destroyPlanet(planet); err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
 
-    if len(errs) > 0 {
-        for _, err := range errs {
-            fmt.Fprintf(os.Stderr,
-                "  sovereign: destroy error: %v\n", err)
-        }
-        return fmt.Errorf("sovereign: %d planet(s) failed to terminate -- manual intervention required",
-            len(errs))
-    }
-    return nil
+	if len(errs) > 0 {
+		for _, err := range errs {
+			fmt.Fprintf(os.Stderr, "  sovereign: destroy error: %v\n", err)
+		}
+		return fmt.Errorf("sovereign: %d planet(s) failed to terminate -- manual intervention required",
+			len(errs))
+	}
+	return nil
 }
 
-// destroyPlanet invokes topobuilder destroy for a single planet.
-// If termination does not complete within cfg.TerminateTimeout
-// the planet's InstanceID is logged for manual intervention.
+// destroyPlanet runs terraform destroy for a single planet.
 func (s *Sovereign) destroyPlanet(planet *Planet) error {
-    fmt.Printf("  sovereign: destroying planet %d (%s)...\n",
-        planet.ID, planet.InstanceID)
+	fmt.Printf("  sovereign: destroying planet %d (%s)...\n",
+		planet.ID, planet.InstanceID)
 
-    configPath := s.planetConfigPath(planet)
-    stateFile := filepath.Join(
-        filepath.Dir(configPath),
-        fmt.Sprintf("planet-%d.tbstate", planet.ID),
-    )
+	s.ledger.Append(LedgerEvent{
+		PlanetID:   planet.ID,
+		EventType:  LedgerEventDestroyStart,
+		InstanceID: planet.InstanceID,
+	})
 
-    ctx, cancel := context.WithTimeout(s.ctx, s.cfg.TerminateTimeout)
-    defer cancel()
+	s.saveProviderState(planet, tfprovider.LifecycleDestroying, nil)
 
-    cmd := exec.CommandContext(ctx, "topobuilder",
-        "-config", configPath,
-        "-state", stateFile,
-        "-mode", "production",
-        "-destroy",
-    )
-    cmd.Stdout = os.Stdout
-    cmd.Stderr = os.Stderr
+	spec := s.planetSpec(planet)
+	if err := s.provider.Destroy(s.ctx, spec); err != nil {
+		s.ledger.Append(LedgerEvent{
+			PlanetID:  planet.ID,
+			EventType: LedgerEventDestroyFailed,
+			Error:     err.Error(),
+		})
+		return fmt.Errorf("planet %d (%s): destroy failed: %w",
+			planet.ID, planet.InstanceID, err)
+	}
 
-    if err := cmd.Run(); err != nil {
-        return fmt.Errorf("planet %d (%s): topobuilder destroy failed: %w",
-            planet.ID, planet.InstanceID, err)
-    }
+	s.saveProviderState(planet, tfprovider.LifecycleDestroyed, nil)
+	s.ledger.Append(LedgerEvent{
+		PlanetID:   planet.ID,
+		EventType:  LedgerEventDestroyComplete,
+		InstanceID: planet.InstanceID,
+	})
 
-    fmt.Printf("  sovereign: planet %d destroyed\n", planet.ID)
-    return nil
+	fmt.Printf("  sovereign: planet %d destroyed\n", planet.ID)
+	return nil
 }
 
-// renderTopobuilderConfig generates a topobuilder-compatible YAML
-// config file for a single planet and writes it to the sovereign
-// working directory. Returns the path to the written config file.
-func (s *Sovereign) renderTopobuilderConfig(planet *Planet) (string, error) {
-    dir := s.planetWorkDir(planet)
-    if err := os.MkdirAll(dir, 0700); err != nil {
-        return "", fmt.Errorf("create planet work dir: %w", err)
-    }
+// -- private helpers ---------------------------------------------------------
 
-    configPath := filepath.Join(dir, "topobuilder.yml")
+// markLost sets the planet status to lost, appends a failure event
+// to the ledger, and returns the original error wrapped with planet context.
+func (s *Sovereign) markLost(planet *Planet, event LedgerEventType, err error) error {
+	planet.mu.Lock()
+	planet.Status = PlanetStatusLost
+	planet.Error = err
+	planet.mu.Unlock()
 
-    // TODO: render full topobuilder YAML from SovereignConfig and
-    // planet fields. The rendered config instructs topobuilder to:
-    //   -- provision one AWS instance in planet.Region
-    //   -- install Go via igo
-    //   -- install lemmings via go install
-    //   -- copy the lemmings plan file if cfg.Plan is set
-    //   -- run lemmings with the sovereign-generated flags
-    //   -- expose the StatusAgent on the configured port
-    //
-    // The topobuilder YAML template lives in templates/topobuilder.yml.go
-    // and is rendered via text/template with planet and config values.
+	s.ledger.Append(LedgerEvent{
+		PlanetID:  planet.ID,
+		EventType: event,
+		Error:     err.Error(),
+	})
 
-    _ = configPath
-    return configPath, fmt.Errorf("renderTopobuilderConfig: not yet implemented")
+	return fmt.Errorf("planet %d: %w", planet.ID, err)
 }
 
-// hydratePlanetFromState reads the topobuilder state file after a
-// successful provision and populates the planet's PublicIPv4 and
-// InstanceID fields.
-func (s *Sovereign) hydratePlanetFromState(planet *Planet, stateFile string) error {
-    // TODO: read and unmarshal the topobuilder TBState YAML file
-    // and extract the first instance's PublicIPv4 and InstanceID
-    // into the planet struct.
-    //
-    // The TBState structure from topobuilder is:
-    //   state.Cluster.Zones[0].Instances[0].PublicIPv4
-    //   state.Cluster.Zones[0].Instances[0].ID
-    _ = stateFile
-    return fmt.Errorf("hydratePlanetFromState: not yet implemented")
+// saveProviderState writes the current provider state to disk.
+// Errors are logged as warnings -- a state save failure does not
+// abort provisioning since the operation itself may have succeeded.
+func (s *Sovereign) saveProviderState(planet *Planet, status tfprovider.LifecycleStatus, out *tfprovider.ProvisionOutput) {
+	state := &tfprovider.ProviderState{
+		PlanetID:     planet.ID,
+		Provider:     s.provider.Name(),
+		Region:       planet.Region,
+		Status:       status,
+		TerraformDir: filepath.Join(s.planetWorkDir(planet), "terraform"),
+		StateFile:    filepath.Join(s.planetWorkDir(planet), "terraform", "terraform.tfstate"),
+	}
+
+	if planet.InstanceID != "" {
+		state.InstanceID = planet.InstanceID
+	}
+	if planet.PublicIPv4 != "" {
+		state.PublicIPv4 = planet.PublicIPv4
+	}
+
+	if out != nil {
+		state.InstanceID = out.InstanceID
+		state.PublicIPv4 = out.PublicIPv4
+		state.PrivateIPv4 = out.PrivateIPv4
+	}
+
+	switch status {
+	case tfprovider.LifecycleInitialized:
+		state.InitializedAt = time.Now().UTC()
+	case tfprovider.LifecycleApplied:
+		state.AppliedAt = time.Now().UTC()
+	case tfprovider.LifecycleDestroyed:
+		state.DestroyedAt = time.Now().UTC()
+	case tfprovider.LifecycleInterrupted:
+		state.InterruptedAt = time.Now().UTC()
+	}
+
+	spec := s.planetSpec(planet)
+	if err := s.provider.SaveState(spec, state); err != nil {
+		fmt.Printf("  sovereign: warning: failed to save provider state for planet %d: %v\n",
+			planet.ID, err)
+	}
 }
 
-// planetWorkDir returns the working directory for a planet's
-// topobuilder config, state file, and collected reports.
+// planetSpec constructs a PlanetSpec from a planet for provider calls.
+func (s *Sovereign) planetSpec(planet *Planet) tfprovider.PlanetSpec {
+	return tfprovider.PlanetSpec{
+		PlanetID: planet.ID,
+		WorkDir:  s.planetWorkDir(planet),
+		Region:   planet.Region,
+		Zone:     planet.Region + "a",
+	}
+}
+
+// hclSpec constructs an HCLSpec from a planet and sovereign config
+// for provider HCL rendering.
+func (s *Sovereign) hclSpec(planet *Planet) tfprovider.HCLSpec {
+	home, _ := os.UserHomeDir()
+	return tfprovider.HCLSpec{
+		PlanetID:        planet.ID,
+		Slug:            fmt.Sprintf("sovereign-planet-%d", planet.ID),
+		Region:          planet.Region,
+		Zone:            planet.Region + "a",
+		InstanceType:    planet.InstanceType,
+		RemoteUser:      s.cfg.RemoteUser,
+		AMIOS:           s.cfg.AMIOS,
+		AMIOwners:       s.cfg.AMIOwners,
+		SubnetID:        os.Getenv("SOVEREIGN_SUBNET_ID"),
+		SecurityGroupID: os.Getenv("SOVEREIGN_SECURITY_GROUP"),
+		RootVolumeSize:  s.cfg.RootVolumeSize,
+		RootVolumeType:  s.cfg.RootVolumeType,
+		TempVolumeSize:  s.cfg.TempVolumeSize,
+		TempVolumeType:  s.cfg.TempVolumeType,
+		SSHKeyPath:      filepath.Join(home, ".ssh", "sovereign-planet.pem"),
+		GoVersion:       s.cfg.GoVersion,
+		LemmingsPackage: s.cfg.LemmingsPackage,
+		Hit:             s.cfg.Hit,
+		Terrain:         s.cfg.Terrain,
+		Pack:            s.cfg.Pack,
+		Until:           s.cfg.Until.String(),
+		Ramp:            s.cfg.Ramp.String(),
+		SaveTo:          fmt.Sprintf("/home/%s/lemmings", s.cfg.RemoteUser),
+		WorkDir:         s.planetWorkDir(planet),
+		StateFilePath: filepath.Join(
+			s.planetWorkDir(planet), "terraform", "terraform.tfstate"),
+	}
+}
+
+// planetWorkDir returns the working directory for a planet.
 func (s *Sovereign) planetWorkDir(planet *Planet) string {
-    home, _ := os.UserHomeDir()
-    return filepath.Join(home, ".sovereignd", "planets",
-        fmt.Sprintf("planet-%d", planet.ID))
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".sovereignd", "planets",
+		fmt.Sprintf("planet-%d", planet.ID))
 }
-
-// planetConfigPath returns the expected topobuilder config path
-// for a planet without creating it.
-func (s *Sovereign) planetConfigPath(planet *Planet) string {
-    return filepath.Join(s.planetWorkDir(planet), "topobuilder.yml")
-}​​​​​​​​​​​​​​​​
