@@ -8,6 +8,10 @@ import (
 	"sync"
 	"time"
 
+	tfdo  "github.com/andreimerlescu/sovereign/pkg/terraform_provider/do"
+    tfgcp "github.com/andreimerlescu/sovereign/pkg/terraform_provider/gcp" 
+    tfoci "github.com/andreimerlescu/sovereign/pkg/terraform_provider/oci"
+    tfovh "github.com/andreimerlescu/sovereign/pkg/terraform_provider/ovh"
 	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
 	tfaws "github.com/andreimerlescu/sovereign/pkg/terraform_provider/aws"
 )
@@ -339,15 +343,20 @@ func (s *Sovereign) printFinalSummary() {
 	fmt.Println("─────────────────────────────────────────")
 }
 
-// newProvider constructs the TerraformProvider for the configured
-// cloud provider. Additional providers are added here as they are
-// implemented.
 func newProvider(cfg SovereignConfig) (tfprovider.TerraformProvider, error) {
 	switch cfg.Provider {
 	case "aws":
 		return tfaws.New()
+	case "digitalocean":
+		return &tfdo.TerraformProviderDigitalOcean{}, nil
+	case "gcp":
+		return &tfgcp.TerraformProviderGCP{}, nil
+	case "oci":
+		return &tfoci.TerraformProviderOCI{}, nil
+	case "ovh":
+		return &tfovh.TerraformProviderOVH{}, nil
 	default:
-		return nil, fmt.Errorf("sovereign: unknown provider %q -- supported: aws",
+		return nil, fmt.Errorf("sovereign: unknown provider %q -- supported: aws, digitalocean, gcp, oci, ovh",
 			cfg.Provider)
 	}
 }
