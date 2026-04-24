@@ -1,4 +1,4 @@
-package terraform_exeggutor
+package exeggutor
 
 import (
 	"context"

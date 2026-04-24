@@ -1,4 +1,4 @@
-package terraform_exeggutor
+package exeggutor
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
+	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform/provider"
 )
 
 // -- helpers -----------------------------------------------------------------

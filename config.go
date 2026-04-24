@@ -85,39 +85,80 @@ func loadConfigFile(path string, cfg *SovereignConfig) error {
 	return nil
 }
 
-// mergeConfigFile applies non-zero values from file into cfg
-// without overwriting values that were explicitly set via flags.
+// mergeConfigFile applies values from file into cfg only when the
+// corresponding cfg field is still at its zero value. This ensures
+// that any value explicitly set by a flag (even if it matches a
+// default) is never overwritten by the config file.
+//
+// Exception: bool flags (Yes, DryRun) and numeric flags (Planets,
+// Terrain, Pack, RootVolumeSize, TempVolumeSize) use zero-value
+// checks directly since false/0 unambiguously means "not set via flag"
+// in this context. Duration fields compare against the compile-time
+// defaults because duration zero means "not set".
 func mergeConfigFile(file *SovereignConfigFile, cfg *SovereignConfig) error {
-	// Core
-	if cfg.Hit == defaultHit && file.Hit != "" {
+	// String fields: only merge when cfg field is empty string.
+	// This means any flag-set value, including one that matches a
+	// default, is preserved.
+	if cfg.Hit == "" && file.Hit != "" {
 		cfg.Hit = file.Hit
-	}
-	if cfg.Planets == defaultPlanets && file.Planets > 0 {
-		cfg.Planets = file.Planets
-	}
-	if cfg.Terrain == defaultTerrain && file.Terrain > 0 {
-		cfg.Terrain = file.Terrain
-	}
-	if cfg.Pack == defaultPack && file.Pack > 0 {
-		cfg.Pack = file.Pack
 	}
 	if cfg.Plan == "" && file.Plan != "" {
 		cfg.Plan = file.Plan
 	}
-	if len(cfg.SaveTo) == 1 && cfg.SaveTo[0] == defaultSaveTo && len(file.SaveTo) > 0 {
-		cfg.SaveTo = file.SaveTo
-	}
-
-	// Infrastructure
-	if cfg.Provider == defaultProvider && file.Provider != "" {
+	if cfg.Provider == "" && file.Provider != "" {
 		cfg.Provider = file.Provider
-	}
-	if len(cfg.Regions) == 0 && len(file.Regions) > 0 {
-		cfg.Regions = file.Regions
 	}
 	if cfg.InstanceType == "" && file.InstanceType != "" {
 		cfg.InstanceType = file.InstanceType
 	}
+	if cfg.RemoteUser == "" && file.RemoteUser != "" {
+		cfg.RemoteUser = file.RemoteUser
+	}
+	if cfg.AMIOS == "" && file.AMIOS != "" {
+		cfg.AMIOS = file.AMIOS
+	}
+	if cfg.AMIOwners == "" && file.AMIOwners != "" {
+		cfg.AMIOwners = file.AMIOwners
+	}
+	if cfg.GoVersion == "" && file.GoVersion != "" {
+		cfg.GoVersion = file.GoVersion
+	}
+	if cfg.LemmingsPackage == "" && file.LemmingsPackage != "" {
+		cfg.LemmingsPackage = file.LemmingsPackage
+	}
+	if cfg.RootVolumeType == "" && file.RootVolumeType != "" {
+		cfg.RootVolumeType = file.RootVolumeType
+	}
+	if cfg.TempVolumeType == "" && file.TempVolumeType != "" {
+		cfg.TempVolumeType = file.TempVolumeType
+	}
+
+	// Slice fields
+	if len(cfg.Regions) == 0 && len(file.Regions) > 0 {
+		cfg.Regions = file.Regions
+	}
+	if len(cfg.SaveTo) == 0 && len(file.SaveTo) > 0 {
+		cfg.SaveTo = file.SaveTo
+	}
+
+	// Numeric fields: merge when zero.
+	if cfg.Planets == 0 && file.Planets > 0 {
+		cfg.Planets = file.Planets
+	}
+	if cfg.Terrain == 0 && file.Terrain > 0 {
+		cfg.Terrain = file.Terrain
+	}
+	if cfg.Pack == 0 && file.Pack > 0 {
+		cfg.Pack = file.Pack
+	}
+	if cfg.RootVolumeSize == 0 && file.RootVolumeSize > 0 {
+		cfg.RootVolumeSize = file.RootVolumeSize
+	}
+	if cfg.TempVolumeSize == 0 && file.TempVolumeSize > 0 {
+		cfg.TempVolumeSize = file.TempVolumeSize
+	}
+
+	// Bool fields: only set true, never override true with false.
 	if !cfg.Yes && file.Yes {
 		cfg.Yes = file.Yes
 	}
@@ -125,57 +166,22 @@ func mergeConfigFile(file *SovereignConfigFile, cfg *SovereignConfig) error {
 		cfg.DryRun = file.DryRun
 	}
 
-	// Remote instance
-	if cfg.RemoteUser == defaultRemoteUser && file.RemoteUser != "" {
-		cfg.RemoteUser = file.RemoteUser
-	}
-
-	// AMI
-	if cfg.AMIOS == defaultAMIOS && file.AMIOS != "" {
-		cfg.AMIOS = file.AMIOS
-	}
-	if cfg.AMIOwners == defaultAMIOwners && file.AMIOwners != "" {
-		cfg.AMIOwners = file.AMIOwners
-	}
-
-	// Go and lemmings
-	if cfg.GoVersion == defaultGoVersion && file.GoVersion != "" {
-		cfg.GoVersion = file.GoVersion
-	}
-	if cfg.LemmingsPackage == defaultLemmingsPackage && file.LemmingsPackage != "" {
-		cfg.LemmingsPackage = file.LemmingsPackage
-	}
-
-	// EBS volumes
-	if cfg.RootVolumeSize == defaultRootVolumeSize && file.RootVolumeSize > 0 {
-		cfg.RootVolumeSize = file.RootVolumeSize
-	}
-	if cfg.RootVolumeType == defaultRootVolumeType && file.RootVolumeType != "" {
-		cfg.RootVolumeType = file.RootVolumeType
-	}
-	if cfg.TempVolumeSize == defaultTempVolumeSize && file.TempVolumeSize > 0 {
-		cfg.TempVolumeSize = file.TempVolumeSize
-	}
-	if cfg.TempVolumeType == defaultTempVolumeType && file.TempVolumeType != "" {
-		cfg.TempVolumeType = file.TempVolumeType
-	}
-
-	// Duration fields
-	if cfg.Until == defaultUntil && file.Until != "" {
+	// Duration fields: merge when zero.
+	if cfg.Until == 0 && file.Until != "" {
 		d, err := time.ParseDuration(strings.TrimSpace(file.Until))
 		if err != nil {
 			return fmt.Errorf("invalid Until duration %q: %w", file.Until, err)
 		}
 		cfg.Until = d
 	}
-	if cfg.Ramp == defaultRamp && file.Ramp != "" {
+	if cfg.Ramp == 0 && file.Ramp != "" {
 		d, err := time.ParseDuration(strings.TrimSpace(file.Ramp))
 		if err != nil {
 			return fmt.Errorf("invalid Ramp duration %q: %w", file.Ramp, err)
 		}
 		cfg.Ramp = d
 	}
-	if cfg.ProvisionTimeout == defaultProvisionTimeout && file.ProvisionTimeout != "" {
+	if cfg.ProvisionTimeout == 0 && file.ProvisionTimeout != "" {
 		d, err := time.ParseDuration(strings.TrimSpace(file.ProvisionTimeout))
 		if err != nil {
 			return fmt.Errorf("invalid ProvisionTimeout duration %q: %w",
@@ -183,7 +189,7 @@ func mergeConfigFile(file *SovereignConfigFile, cfg *SovereignConfig) error {
 		}
 		cfg.ProvisionTimeout = d
 	}
-	if cfg.TerminateTimeout == defaultTerminateTimeout && file.TerminateTimeout != "" {
+	if cfg.TerminateTimeout == 0 && file.TerminateTimeout != "" {
 		d, err := time.ParseDuration(strings.TrimSpace(file.TerminateTimeout))
 		if err != nil {
 			return fmt.Errorf("invalid TerminateTimeout duration %q: %w",

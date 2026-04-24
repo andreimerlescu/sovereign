@@ -8,7 +8,7 @@ import (
 	"text/template"
 	"time"
 
-	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
+	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform/provider"
 )
 
 // hclFile represents a single rendered HCL file to be written to disk.

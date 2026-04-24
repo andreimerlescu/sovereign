@@ -22,6 +22,15 @@ func newTestLedger(t *testing.T) *Ledger {
 	return l
 }
 
+func newBenchLedger(b *testing.B) *Ledger {
+	b.Helper()
+	dir := b.TempDir()
+	l, err := NewLedger(dir, time.Now())
+	if err != nil {
+		b.Fatalf("NewLedger: %v", err)
+	}
+	return l
+}
 func provisionEvent(planetID int) events.Event {
 	return events.Event{
 		Kind:     events.KindProvisionStart,
@@ -46,6 +55,43 @@ func collectCompleteEvent(planetID int) events.Event {
 	return events.Event{
 		Kind:     events.KindCollectComplete,
 		PlanetID: planetID,
+	}
+}
+
+// testErr is a minimal error type for use in ledger tests.
+type testErr string
+
+func (e testErr) Error() string { return string(e) }
+
+// testBus is a minimal synchronous event bus for ledger integration tests.
+// It avoids importing the full events.EventBus to keep the test simple.
+type testBus struct {
+	mu          sync.Mutex
+	subscribers []events.Subscriber
+}
+
+func newTestBus() *testBus {
+	return &testBus{}
+}
+
+func (b *testBus) subscribe(fn events.Subscriber) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.subscribers = append(b.subscribers, fn)
+}
+
+func (b *testBus) emit(e events.Event) {
+	if e.OccurredAt.IsZero() {
+		e.OccurredAt = time.Now()
+	}
+	b.mu.Lock()
+	subs := make([]events.Subscriber, len(b.subscribers))
+	copy(subs, b.subscribers)
+	b.mu.Unlock()
+	for _, fn := range subs {
+		if fn != nil {
+			fn(e)
+		}
 	}
 }
 
@@ -365,7 +411,7 @@ func TestAsSubscriber_AppendsCalled(t *testing.T) {
 }
 
 // TestAsSubscriber_IntegratesWithEventBus verifies that AsSubscriber
-// works correctly when registered on an events.EventBus.
+// works correctly when registered on an event bus.
 func TestAsSubscriber_IntegratesWithEventBus(t *testing.T) {
 	l := newTestLedger(t)
 
@@ -553,4 +599,68 @@ func TestEntryFromEvent_MapsAllFields(t *testing.T) {
 		t.Errorf("Provider: got %q want do", entry.Provider)
 	}
 	if entry.Region != "nyc1" {
-		t.Errorf("Region: got %q want​​​​​​​​​​​​​​​​
+		t.Errorf("Region: got %q want nyc1", entry.Region)
+	}
+	if entry.InstanceID != "i-123" {
+		t.Errorf("InstanceID: got %q want i-123", entry.InstanceID)
+	}
+	if entry.PublicIPv4 != "1.2.3.4" {
+		t.Errorf("PublicIPv4: got %q want 1.2.3.4", entry.PublicIPv4)
+	}
+	if entry.Detail != "done" {
+		t.Errorf("Detail: got %q want done", entry.Detail)
+	}
+	if entry.Error != "oops" {
+		t.Errorf("Error: got %q want oops", entry.Error)
+	}
+}
+
+// -- Benchmarks --------------------------------------------------------------
+
+// BenchmarkAppend measures Append throughput including disk flush.
+func BenchmarkAppend(b *testing.B) {
+	l := &Ledger{}
+	dir := b.TempDir()
+	startedAt := time.Now()
+	runID := startedAt.UTC().Format("2006-01-02T15-04-05")
+	runDir := filepath.Join(dir, "runs", runID)
+	if err := os.MkdirAll(runDir, 0700); err != nil {
+		b.Fatalf("MkdirAll: %v", err)
+	}
+	l.path = filepath.Join(runDir, "ledger.yml")
+	l.runID = runID
+	l.startedAt = startedAt
+	l.entries = []Entry{}
+	if err := l.flush(); err != nil {
+		b.Fatalf("flush: %v", err)
+	}
+
+	evt := events.Event{
+		Kind:     events.KindProvisionStart,
+		PlanetID: 1,
+		Provider: "aws",
+		Region:   "us-east-1",
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = l.Append(evt)
+	}
+}
+
+// BenchmarkLastEntryForPlanet measures lookup throughput with 100 entries.
+func BenchmarkLastEntryForPlanet(b *testing.B) {
+	l := newBenchLedger(b)
+	for i := 0; i < 100; i++ {
+		_ = l.Append(events.Event{
+			Kind:     events.KindProvisionStart,
+			PlanetID: (i % 5) + 1,
+		})
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		l.LastEntryForPlanet(3)
+	}
+}
+
+// 666 - Yah'Shua

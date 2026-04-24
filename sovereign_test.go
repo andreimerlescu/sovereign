@@ -7,8 +7,6 @@ import (
 
 // -- initPlanets -------------------------------------------------------------
 
-// TestInitPlanets_CorrectCount verifies that initPlanets returns
-// exactly cfg.Planets planets.
 func TestInitPlanets_CorrectCount(t *testing.T) {
 	s := testSovereign(t)
 	s.cfg.Planets = 5
@@ -17,7 +15,6 @@ func TestInitPlanets_CorrectCount(t *testing.T) {
 	requireEqual(t, len(planets), 5, "initPlanets correct count")
 }
 
-// TestInitPlanets_IDsStartAtOne verifies that planet IDs begin at 1.
 func TestInitPlanets_IDsStartAtOne(t *testing.T) {
 	s := testSovereign(t)
 	s.cfg.Planets = 3
@@ -28,8 +25,6 @@ func TestInitPlanets_IDsStartAtOne(t *testing.T) {
 	requireEqual(t, planets[2].ID, 3, "initPlanets third ID is 3")
 }
 
-// TestInitPlanets_RegionsDistributedRoundRobin verifies that regions
-// are assigned round-robin across planets.
 func TestInitPlanets_RegionsDistributedRoundRobin(t *testing.T) {
 	s := testSovereign(t)
 	s.cfg.Planets = 5
@@ -43,8 +38,6 @@ func TestInitPlanets_RegionsDistributedRoundRobin(t *testing.T) {
 	requireEqual(t, planets[4].Region, "us-west-1", "initPlanets round robin 4")
 }
 
-// TestInitPlanets_UsesDefaultRegionsWhenNoneConfigured verifies that
-// defaultAWSRegions is used when cfg.Regions is empty.
 func TestInitPlanets_UsesDefaultRegionsWhenNoneConfigured(t *testing.T) {
 	s := testSovereign(t)
 	s.cfg.Planets = 1
@@ -54,8 +47,6 @@ func TestInitPlanets_UsesDefaultRegionsWhenNoneConfigured(t *testing.T) {
 		"initPlanets uses default regions")
 }
 
-// TestInitPlanets_AllPendingStatus verifies that all planets start
-// in PlanetStatusPending.
 func TestInitPlanets_AllPendingStatus(t *testing.T) {
 	s := testSovereign(t)
 	s.cfg.Planets = 3
@@ -67,8 +58,6 @@ func TestInitPlanets_AllPendingStatus(t *testing.T) {
 	}
 }
 
-// TestInitPlanets_RemoteUserPopulated verifies that each planet
-// gets the RemoteUser from cfg.
 func TestInitPlanets_RemoteUserPopulated(t *testing.T) {
 	s := testSovereign(t)
 	s.cfg.Planets = 2
@@ -81,8 +70,6 @@ func TestInitPlanets_RemoteUserPopulated(t *testing.T) {
 	}
 }
 
-// TestInitPlanets_InstanceTypePopulated verifies that each planet
-// gets the InstanceType from cfg.
 func TestInitPlanets_InstanceTypePopulated(t *testing.T) {
 	s := testSovereign(t)
 	s.cfg.Planets = 2
@@ -121,8 +108,9 @@ func TestNewProvider_UnknownProvider(t *testing.T) {
 }
 
 // TestNewProvider_DigitalOcean verifies that the digitalocean provider
-// returns a non-nil stub provider.
+// returns a non-nil provider without error when credentials are present.
 func TestNewProvider_DigitalOcean(t *testing.T) {
+	t.Setenv("DIGITALOCEAN_TOKEN", "test-token")
 	cfg := testConfig()
 	cfg.Provider = "digitalocean"
 	p, err := newProvider(cfg)
@@ -131,31 +119,37 @@ func TestNewProvider_DigitalOcean(t *testing.T) {
 	requireEqual(t, p.Name(), "digitalocean", "newProvider digitalocean name")
 }
 
-// TestNewProvider_GCP verifies that the gcp provider returns a
-// non-nil stub provider.
+// TestNewProvider_GCP verifies that gcp is not a supported provider
+// and returns an error.
 func TestNewProvider_GCP(t *testing.T) {
 	cfg := testConfig()
 	cfg.Provider = "gcp"
-	p, err := newProvider(cfg)
-	requireNoError(t, err, "newProvider gcp")
-	requireTrue(t, p != nil, "newProvider gcp non-nil")
-	requireEqual(t, p.Name(), "gcp", "newProvider gcp name")
+	_, err := newProvider(cfg)
+	requireError(t, err, "newProvider gcp returns error -- not supported")
 }
 
-// TestNewProvider_OCI verifies that the oci provider returns a
-// non-nil stub provider.
+// TestNewProvider_OCI verifies that oci is not a supported provider
+// and returns an error.
 func TestNewProvider_OCI(t *testing.T) {
 	cfg := testConfig()
 	cfg.Provider = "oci"
-	p, err := newProvider(cfg)
-	requireNoError(t, err, "newProvider oci")
-	requireTrue(t, p != nil, "newProvider oci non-nil")
-	requireEqual(t, p.Name(), "oci", "newProvider oci name")
+	_, err := newProvider(cfg)
+	requireError(t, err, "newProvider oci returns error -- not supported")
 }
 
 // TestNewProvider_OVH verifies that the ovh provider returns a
-// non-nil stub provider.
+// non-nil provider without error when credentials are present.
 func TestNewProvider_OVH(t *testing.T) {
+	t.Setenv("OVH_ENDPOINT", "ovh-eu")
+	t.Setenv("OVH_APPLICATION_KEY", "test-key")
+	t.Setenv("OVH_APPLICATION_SECRET", "test-secret")
+	t.Setenv("OVH_CONSUMER_KEY", "test-consumer")
+	t.Setenv("OS_AUTH_URL", "https://auth.example.com")
+	t.Setenv("OS_TENANT_ID", "test-tenant-id")
+	t.Setenv("OS_TENANT_NAME", "test-tenant")
+	t.Setenv("OS_USERNAME", "test-user")
+	t.Setenv("OS_PASSWORD", "test-pass")
+	t.Setenv("OS_REGION_NAME", "GRA11")
 	cfg := testConfig()
 	cfg.Provider = "ovh"
 	p, err := newProvider(cfg)
@@ -166,8 +160,6 @@ func TestNewProvider_OVH(t *testing.T) {
 
 // -- lostPlanets / pendingPlanets / allPlanetsTerminal -----------------------
 
-// TestLostPlanets_ReturnsOnlyLost verifies that only lost planets
-// are returned.
 func TestLostPlanets_ReturnsOnlyLost(t *testing.T) {
 	s := testSovereignWithPlanets(t, []*Planet{
 		testPlanet(1),
@@ -181,8 +173,6 @@ func TestLostPlanets_ReturnsOnlyLost(t *testing.T) {
 	requireEqual(t, lost[1].ID, 4, "lostPlanets second ID")
 }
 
-// TestPendingPlanets_ReturnsNonTerminal verifies that planets not in
-// done or lost status are returned.
 func TestPendingPlanets_ReturnsNonTerminal(t *testing.T) {
 	running := testProvisionedPlanet(2)
 	s := testSovereignWithPlanets(t, []*Planet{
@@ -195,8 +185,6 @@ func TestPendingPlanets_ReturnsNonTerminal(t *testing.T) {
 	requireEqual(t, len(pending), 2, "pendingPlanets count")
 }
 
-// TestAllPlanetsTerminal_TrueWhenAllDoneOrLost verifies that the
-// function returns true when every planet is terminal.
 func TestAllPlanetsTerminal_TrueWhenAllDoneOrLost(t *testing.T) {
 	s := testSovereignWithPlanets(t, []*Planet{
 		testDonePlanet(t, 1),
@@ -206,8 +194,6 @@ func TestAllPlanetsTerminal_TrueWhenAllDoneOrLost(t *testing.T) {
 	requireTrue(t, s.allPlanetsTerminal(), "allPlanetsTerminal true")
 }
 
-// TestAllPlanetsTerminal_FalseWhenAnyPending verifies that the
-// function returns false when any planet is still running.
 func TestAllPlanetsTerminal_FalseWhenAnyPending(t *testing.T) {
 	s := testSovereignWithPlanets(t, []*Planet{
 		testDonePlanet(t, 1),
@@ -216,8 +202,6 @@ func TestAllPlanetsTerminal_FalseWhenAnyPending(t *testing.T) {
 	requireFalse(t, s.allPlanetsTerminal(), "allPlanetsTerminal false")
 }
 
-// TestAllPlanetsTerminal_TrueForEmptyPlanets verifies that the
-// function returns true when there are no planets.
 func TestAllPlanetsTerminal_TrueForEmptyPlanets(t *testing.T) {
 	s := testSovereignWithPlanets(t, []*Planet{})
 	requireTrue(t, s.allPlanetsTerminal(),
@@ -226,8 +210,6 @@ func TestAllPlanetsTerminal_TrueForEmptyPlanets(t *testing.T) {
 
 // -- printCostEstimate -------------------------------------------------------
 
-// TestPrintCostEstimate_NoPanic verifies that printCostEstimate does
-// not panic with a valid estimate.
 func TestPrintCostEstimate_NoPanic(t *testing.T) {
 	s := testSovereign(t)
 	estimate := &CostEstimate{
@@ -243,13 +225,11 @@ func TestPrintCostEstimate_NoPanic(t *testing.T) {
 			},
 		},
 	}
-	// must not panic
 	s.printCostEstimate(estimate)
 }
 
 // -- Benchmarks --------------------------------------------------------------
 
-// BenchmarkInitPlanets measures planet initialization throughput.
 func BenchmarkInitPlanets(b *testing.B) {
 	s := benchmarkSovereign(b)
 	s.cfg.Planets = 100

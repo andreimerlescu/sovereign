@@ -22,8 +22,8 @@ const (
 
 // -- mock server helpers -----------------------------------------------------
 
-func newMockPricingServer(t *testing.T) *httptest.Server {
-	t.Helper()
+func newMockPricingServer(tb testing.TB) *httptest.Server {
+	tb.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		instanceType := r.URL.Query().Get("instance_type")
 		if instanceType == "" {
@@ -44,27 +44,27 @@ func newMockPricingServer(t *testing.T) *httptest.Server {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(response)
 	}))
-	t.Cleanup(srv.Close)
+	tb.Cleanup(srv.Close)
 	return srv
 }
 
-func newMockPricingServerEmpty(t *testing.T) *httptest.Server {
-	t.Helper()
+func newMockPricingServerEmpty(tb testing.TB) *httptest.Server {
+	tb.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode([]vantageResponse{})
 	}))
-	t.Cleanup(srv.Close)
+	tb.Cleanup(srv.Close)
 	return srv
 }
 
-func newMockPricingServerError(t *testing.T) *httptest.Server {
-	t.Helper()
+func newMockPricingServerError(tb testing.TB) *httptest.Server {
+	tb.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	t.Cleanup(srv.Close)
+	tb.Cleanup(srv.Close)
 	return srv
 }
 

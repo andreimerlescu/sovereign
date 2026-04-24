@@ -11,10 +11,10 @@ import (
 	"github.com/andreimerlescu/sovereign/pkg/events"
 	"github.com/andreimerlescu/sovereign/pkg/ledger"
 	"github.com/andreimerlescu/sovereign/pkg/pricing"
-	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
-	tfaws "github.com/andreimerlescu/sovereign/pkg/terraform_provider/aws"
-	tfdo "github.com/andreimerlescu/sovereign/pkg/terraform_provider/do"
-	tfovh "github.com/andreimerlescu/sovereign/pkg/terraform_provider/ovh"
+	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform/provider"
+	tfaws "github.com/andreimerlescu/sovereign/pkg/terraform/provider/aws"
+	tfdo "github.com/andreimerlescu/sovereign/pkg/terraform/provider/do"
+	tfovh "github.com/andreimerlescu/sovereign/pkg/terraform/provider/ovh"
 )
 
 // SovereignConfig is the single source of truth flowing from CLI

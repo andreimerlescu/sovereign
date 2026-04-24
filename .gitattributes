@@ -1,0 +1,8 @@
+go.sum linguist-generated
+README.md linguist-documentation
+CLAUDE.md linguist-documentation
+TESTS.md linguist-documentation
+logs/* linguist-generated
+testdata/* linguist-generated
+summaries/* linguist-generated
+.sovereignd/* linguist-generated

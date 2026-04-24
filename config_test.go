@@ -3,14 +3,13 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 // -- loadConfigFile ----------------------------------------------------------
 
-// TestLoadConfigFile_ValidFile verifies that a well-formed sovereign
-// YAML config file is correctly parsed and merged into the config.
 func TestLoadConfigFile_ValidFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sovereign.yml")
@@ -46,25 +45,7 @@ TempVolumeType: gp2
 	err := os.WriteFile(path, []byte(contents), 0644)
 	requireNoError(t, err, "write test config file")
 
-	cfg := testConfig()
-	cfg.Hit = defaultHit
-	cfg.Planets = defaultPlanets
-	cfg.Terrain = defaultTerrain
-	cfg.Pack = defaultPack
-	cfg.Until = defaultUntil
-	cfg.Ramp = defaultRamp
-	cfg.Regions = []string{}
-	cfg.InstanceType = ""
-	cfg.SaveTo = []string{defaultSaveTo}
-	cfg.RemoteUser = defaultRemoteUser
-	cfg.AMIOS = defaultAMIOS
-	cfg.AMIOwners = defaultAMIOwners
-	cfg.GoVersion = defaultGoVersion
-	cfg.LemmingsPackage = defaultLemmingsPackage
-	cfg.RootVolumeSize = defaultRootVolumeSize
-	cfg.RootVolumeType = defaultRootVolumeType
-	cfg.TempVolumeSize = defaultTempVolumeSize
-	cfg.TempVolumeType = defaultTempVolumeType
+	cfg := SovereignConfig{}
 
 	err = loadConfigFile(path, &cfg)
 	requireNoError(t, err, "loadConfigFile valid file")
@@ -91,7 +72,6 @@ TempVolumeType: gp2
 	requireEqual(t, cfg.TempVolumeType, "gp2", "TempVolumeType from config file")
 }
 
-// TestLoadConfigFile_EmptyPath verifies that an empty path is a no-op.
 func TestLoadConfigFile_EmptyPath(t *testing.T) {
 	cfg := testConfig()
 	original := cfg.Hit
@@ -100,16 +80,12 @@ func TestLoadConfigFile_EmptyPath(t *testing.T) {
 	requireEqual(t, cfg.Hit, original, "Hit unchanged for empty path")
 }
 
-// TestLoadConfigFile_MissingFile verifies that a non-existent file
-// returns a non-nil error.
 func TestLoadConfigFile_MissingFile(t *testing.T) {
 	cfg := testConfig()
 	err := loadConfigFile("/nonexistent/path/sovereign.yml", &cfg)
 	requireError(t, err, "loadConfigFile missing file")
 }
 
-// TestLoadConfigFile_MalformedYAML verifies that invalid YAML returns
-// a non-nil error.
 func TestLoadConfigFile_MalformedYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yml")
@@ -121,8 +97,6 @@ func TestLoadConfigFile_MalformedYAML(t *testing.T) {
 	requireError(t, err, "loadConfigFile malformed YAML")
 }
 
-// TestLoadConfigFile_EmptyFile verifies that an empty file is parsed
-// without error and leaves the config unchanged.
 func TestLoadConfigFile_EmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.yml")
@@ -136,8 +110,6 @@ func TestLoadConfigFile_EmptyFile(t *testing.T) {
 	requireEqual(t, cfg.Hit, original, "Hit unchanged for empty file")
 }
 
-// TestLoadConfigFile_FlagsOverrideConfigFile verifies that values
-// already set in the config are not overwritten by the config file.
 func TestLoadConfigFile_FlagsOverrideConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sovereign.yml")
@@ -149,7 +121,7 @@ RemoteUser: ubuntu
 	err := os.WriteFile(path, []byte(contents), 0644)
 	requireNoError(t, err, "write config file")
 
-	cfg := testConfig()
+	cfg := SovereignConfig{}
 	cfg.Hit = "https://from-flag.com"
 	cfg.Planets = 3
 	cfg.RemoteUser = "rocky"
@@ -167,56 +139,34 @@ RemoteUser: ubuntu
 
 // -- mergeConfigFile ---------------------------------------------------------
 
-// TestMergeConfigFile_AllDefaults verifies that all fields from the
-// config file are applied when the config holds default values.
 func TestMergeConfigFile_AllDefaults(t *testing.T) {
 	file := &SovereignConfigFile{
-		Hit:             "https://merged.com",
-		Planets:         7,
-		Terrain:         20,
-		Pack:            20,
-		Until:           "45s",
-		Ramp:            "3m",
-		Plan:            "merged.plan.yml",
-		Regions:         []string{"eu-west-1"},
-		InstanceType:    "c6a.large",
-		SaveTo:          []string{"/tmp/merged"},
+		Hit:              "https://merged.com",
+		Planets:          7,
+		Terrain:          20,
+		Pack:             20,
+		Until:            "45s",
+		Ramp:             "3m",
+		Plan:             "merged.plan.yml",
+		Regions:          []string{"eu-west-1"},
+		InstanceType:     "c6a.large",
+		SaveTo:           []string{"/tmp/merged"},
 		ProvisionTimeout: "8m",
 		TerminateTimeout: "8m",
-		Yes:             true,
-		DryRun:          true,
-		RemoteUser:      "ubuntu",
-		AMIOS:           "ubuntu/images/hvm-ssd/ubuntu-*-amd64*",
-		AMIOwners:       "amazon",
-		GoVersion:       "1.24.0",
-		LemmingsPackage: "github.com/andreimerlescu/lemmings@v1.0.0",
-		RootVolumeSize:  60,
-		RootVolumeType:  "gp3",
-		TempVolumeSize:  20,
-		TempVolumeType:  "gp3",
+		Yes:              true,
+		DryRun:           true,
+		RemoteUser:       "ubuntu",
+		AMIOS:            "ubuntu/images/hvm-ssd/ubuntu-*-amd64*",
+		AMIOwners:        "amazon",
+		GoVersion:        "1.24.0",
+		LemmingsPackage:  "github.com/andreimerlescu/lemmings@v1.0.0",
+		RootVolumeSize:   60,
+		RootVolumeType:   "gp3",
+		TempVolumeSize:   20,
+		TempVolumeType:   "gp3",
 	}
 
-	cfg := SovereignConfig{
-		Hit:              defaultHit,
-		Planets:          defaultPlanets,
-		Terrain:          defaultTerrain,
-		Pack:             defaultPack,
-		Until:            defaultUntil,
-		Ramp:             defaultRamp,
-		SaveTo:           []string{defaultSaveTo},
-		ProvisionTimeout: defaultProvisionTimeout,
-		TerminateTimeout: defaultTerminateTimeout,
-		Provider:         defaultProvider,
-		RemoteUser:       defaultRemoteUser,
-		AMIOS:            defaultAMIOS,
-		AMIOwners:        defaultAMIOwners,
-		GoVersion:        defaultGoVersion,
-		LemmingsPackage:  defaultLemmingsPackage,
-		RootVolumeSize:   defaultRootVolumeSize,
-		RootVolumeType:   defaultRootVolumeType,
-		TempVolumeSize:   defaultTempVolumeSize,
-		TempVolumeType:   defaultTempVolumeType,
-	}
+	cfg := SovereignConfig{}
 
 	err := mergeConfigFile(file, &cfg)
 	requireNoError(t, err, "mergeConfigFile all defaults")
@@ -247,8 +197,6 @@ func TestMergeConfigFile_AllDefaults(t *testing.T) {
 	requireEqual(t, cfg.TempVolumeType, "gp3", "merged TempVolumeType")
 }
 
-// TestMergeConfigFile_DoesNotOverrideNonDefaults verifies that
-// non-default config values are preserved.
 func TestMergeConfigFile_DoesNotOverrideNonDefaults(t *testing.T) {
 	file := &SovereignConfigFile{
 		Hit:            "https://from-file.com",
@@ -281,52 +229,34 @@ func TestMergeConfigFile_DoesNotOverrideNonDefaults(t *testing.T) {
 	requireEqual(t, cfg.RootVolumeType, "gp2", "RootVolumeType must not be overridden")
 }
 
-// TestMergeConfigFile_InvalidUntilDuration verifies that a malformed
-// Until duration string returns a non-nil error.
 func TestMergeConfigFile_InvalidUntilDuration(t *testing.T) {
 	file := &SovereignConfigFile{Until: "not-a-duration"}
-	cfg := SovereignConfig{Until: defaultUntil, Ramp: defaultRamp}
+	cfg := SovereignConfig{}
 	err := mergeConfigFile(file, &cfg)
 	requireError(t, err, "mergeConfigFile invalid Until duration")
 }
 
-// TestMergeConfigFile_InvalidRampDuration verifies that a malformed
-// Ramp duration string returns a non-nil error.
 func TestMergeConfigFile_InvalidRampDuration(t *testing.T) {
 	file := &SovereignConfigFile{Ramp: "not-a-duration"}
-	cfg := SovereignConfig{Until: defaultUntil, Ramp: defaultRamp}
+	cfg := SovereignConfig{}
 	err := mergeConfigFile(file, &cfg)
 	requireError(t, err, "mergeConfigFile invalid Ramp duration")
 }
 
-// TestMergeConfigFile_InvalidProvisionTimeout verifies that a malformed
-// ProvisionTimeout duration string returns a non-nil error.
 func TestMergeConfigFile_InvalidProvisionTimeout(t *testing.T) {
 	file := &SovereignConfigFile{ProvisionTimeout: "not-a-duration"}
-	cfg := SovereignConfig{
-		Until:            defaultUntil,
-		Ramp:             defaultRamp,
-		ProvisionTimeout: defaultProvisionTimeout,
-	}
+	cfg := SovereignConfig{}
 	err := mergeConfigFile(file, &cfg)
 	requireError(t, err, "mergeConfigFile invalid ProvisionTimeout")
 }
 
-// TestMergeConfigFile_InvalidTerminateTimeout verifies that a malformed
-// TerminateTimeout duration string returns a non-nil error.
 func TestMergeConfigFile_InvalidTerminateTimeout(t *testing.T) {
 	file := &SovereignConfigFile{TerminateTimeout: "not-a-duration"}
-	cfg := SovereignConfig{
-		Until:            defaultUntil,
-		Ramp:             defaultRamp,
-		TerminateTimeout: defaultTerminateTimeout,
-	}
+	cfg := SovereignConfig{}
 	err := mergeConfigFile(file, &cfg)
 	requireError(t, err, "mergeConfigFile invalid TerminateTimeout")
 }
 
-// TestMergeConfigFile_EmptyFileIsNoop verifies that an empty config
-// file struct leaves all config values unchanged.
 func TestMergeConfigFile_EmptyFileIsNoop(t *testing.T) {
 	file := &SovereignConfigFile{}
 	cfg := testConfig()
@@ -336,17 +266,11 @@ func TestMergeConfigFile_EmptyFileIsNoop(t *testing.T) {
 	requireEqual(t, cfg.Hit, original, "Hit unchanged for empty config file")
 }
 
-// TestMergeConfigFile_SaveToMerged verifies that SaveTo from the
-// config file replaces the default save-to value.
 func TestMergeConfigFile_SaveToMerged(t *testing.T) {
 	file := &SovereignConfigFile{
 		SaveTo: []string{"/tmp/reports", "s3://my-bucket"},
 	}
-	cfg := SovereignConfig{
-		SaveTo: []string{defaultSaveTo},
-		Until:  defaultUntil,
-		Ramp:   defaultRamp,
-	}
+	cfg := SovereignConfig{}
 	err := mergeConfigFile(file, &cfg)
 	requireNoError(t, err, "mergeConfigFile SaveTo merged")
 	requireEqual(t, len(cfg.SaveTo), 2, "SaveTo count after merge")
@@ -356,15 +280,12 @@ func TestMergeConfigFile_SaveToMerged(t *testing.T) {
 
 // -- validateConfig ----------------------------------------------------------
 
-// TestValidateConfig_ValidConfig verifies that a fully populated
-// valid config passes validation without error.
 func TestValidateConfig_ValidConfig(t *testing.T) {
 	cfg := testConfig()
 	err := validateConfig(&cfg)
 	requireNoError(t, err, "validateConfig valid config")
 }
 
-// TestValidateConfig_EmptyHit verifies that an empty Hit returns error.
 func TestValidateConfig_EmptyHit(t *testing.T) {
 	cfg := testConfig()
 	cfg.Hit = ""
@@ -372,8 +293,6 @@ func TestValidateConfig_EmptyHit(t *testing.T) {
 	requireError(t, err, "validateConfig empty Hit")
 }
 
-// TestValidateConfig_InvalidHitScheme verifies that a Hit value
-// not beginning with http returns a non-nil error.
 func TestValidateConfig_InvalidHitScheme(t *testing.T) {
 	cfg := testConfig()
 	cfg.Hit = "ftp://example.com"
@@ -381,8 +300,6 @@ func TestValidateConfig_InvalidHitScheme(t *testing.T) {
 	requireError(t, err, "validateConfig invalid Hit scheme")
 }
 
-// TestValidateConfig_ZeroPlanets verifies that Planets less than 1
-// returns a non-nil error.
 func TestValidateConfig_ZeroPlanets(t *testing.T) {
 	cfg := testConfig()
 	cfg.Planets = 0
@@ -390,8 +307,6 @@ func TestValidateConfig_ZeroPlanets(t *testing.T) {
 	requireError(t, err, "validateConfig zero Planets")
 }
 
-// TestValidateConfig_ZeroTerrain verifies that Terrain less than 1
-// returns a non-nil error.
 func TestValidateConfig_ZeroTerrain(t *testing.T) {
 	cfg := testConfig()
 	cfg.Terrain = 0
@@ -399,8 +314,6 @@ func TestValidateConfig_ZeroTerrain(t *testing.T) {
 	requireError(t, err, "validateConfig zero Terrain")
 }
 
-// TestValidateConfig_ZeroPack verifies that Pack less than 1
-// returns a non-nil error.
 func TestValidateConfig_ZeroPack(t *testing.T) {
 	cfg := testConfig()
 	cfg.Pack = 0
@@ -408,7 +321,6 @@ func TestValidateConfig_ZeroPack(t *testing.T) {
 	requireError(t, err, "validateConfig zero Pack")
 }
 
-// TestValidateConfig_ZeroUntil verifies that Until of zero returns error.
 func TestValidateConfig_ZeroUntil(t *testing.T) {
 	cfg := testConfig()
 	cfg.Until = 0
@@ -416,7 +328,6 @@ func TestValidateConfig_ZeroUntil(t *testing.T) {
 	requireError(t, err, "validateConfig zero Until")
 }
 
-// TestValidateConfig_ZeroRamp verifies that Ramp of zero returns error.
 func TestValidateConfig_ZeroRamp(t *testing.T) {
 	cfg := testConfig()
 	cfg.Ramp = 0
@@ -424,8 +335,6 @@ func TestValidateConfig_ZeroRamp(t *testing.T) {
 	requireError(t, err, "validateConfig zero Ramp")
 }
 
-// TestValidateConfig_ZeroProvisionTimeout verifies that a zero
-// ProvisionTimeout returns a non-nil error.
 func TestValidateConfig_ZeroProvisionTimeout(t *testing.T) {
 	cfg := testConfig()
 	cfg.ProvisionTimeout = 0
@@ -433,8 +342,6 @@ func TestValidateConfig_ZeroProvisionTimeout(t *testing.T) {
 	requireError(t, err, "validateConfig zero ProvisionTimeout")
 }
 
-// TestValidateConfig_ZeroTerminateTimeout verifies that a zero
-// TerminateTimeout returns a non-nil error.
 func TestValidateConfig_ZeroTerminateTimeout(t *testing.T) {
 	cfg := testConfig()
 	cfg.TerminateTimeout = 0
@@ -442,8 +349,6 @@ func TestValidateConfig_ZeroTerminateTimeout(t *testing.T) {
 	requireError(t, err, "validateConfig zero TerminateTimeout")
 }
 
-// TestValidateConfig_MissingPlanFile verifies that a Plan path that
-// does not exist returns a non-nil error.
 func TestValidateConfig_MissingPlanFile(t *testing.T) {
 	cfg := testConfig()
 	cfg.Plan = "/nonexistent/path/lemmings.plan.yml"
@@ -451,8 +356,6 @@ func TestValidateConfig_MissingPlanFile(t *testing.T) {
 	requireError(t, err, "validateConfig missing plan file")
 }
 
-// TestValidateConfig_ValidPlanFile verifies that an existing Plan
-// path passes validation.
 func TestValidateConfig_ValidPlanFile(t *testing.T) {
 	dir := t.TempDir()
 	planPath := filepath.Join(dir, "lemmings.plan.yml")
@@ -465,8 +368,6 @@ func TestValidateConfig_ValidPlanFile(t *testing.T) {
 	requireNoError(t, err, "validateConfig valid plan file")
 }
 
-// TestValidateConfig_EmptySaveToDestination verifies that a SaveTo
-// list containing an empty string returns a non-nil error.
 func TestValidateConfig_EmptySaveToDestination(t *testing.T) {
 	cfg := testConfig()
 	cfg.SaveTo = []string{".", "", "/tmp/reports"}
@@ -474,7 +375,6 @@ func TestValidateConfig_EmptySaveToDestination(t *testing.T) {
 	requireError(t, err, "validateConfig empty SaveTo destination")
 }
 
-// TestValidateConfig_HTTPSHitValid verifies that an HTTPS Hit passes.
 func TestValidateConfig_HTTPSHitValid(t *testing.T) {
 	cfg := testConfig()
 	cfg.Hit = "https://example.com/"
@@ -482,8 +382,6 @@ func TestValidateConfig_HTTPSHitValid(t *testing.T) {
 	requireNoError(t, err, "validateConfig HTTPS Hit valid")
 }
 
-// TestValidateConfig_EmptyInstanceType verifies that an empty
-// InstanceType returns a non-nil error.
 func TestValidateConfig_EmptyInstanceType(t *testing.T) {
 	cfg := testConfig()
 	cfg.InstanceType = ""
@@ -491,8 +389,6 @@ func TestValidateConfig_EmptyInstanceType(t *testing.T) {
 	requireError(t, err, "validateConfig empty InstanceType")
 }
 
-// TestValidateConfig_EmptyRemoteUser verifies that an empty
-// RemoteUser returns a non-nil error.
 func TestValidateConfig_EmptyRemoteUser(t *testing.T) {
 	cfg := testConfig()
 	cfg.RemoteUser = ""
@@ -500,8 +396,6 @@ func TestValidateConfig_EmptyRemoteUser(t *testing.T) {
 	requireError(t, err, "validateConfig empty RemoteUser")
 }
 
-// TestValidateConfig_EmptyAMIOS verifies that an empty AMIOS
-// returns a non-nil error.
 func TestValidateConfig_EmptyAMIOS(t *testing.T) {
 	cfg := testConfig()
 	cfg.AMIOS = ""
@@ -509,8 +403,6 @@ func TestValidateConfig_EmptyAMIOS(t *testing.T) {
 	requireError(t, err, "validateConfig empty AMIOS")
 }
 
-// TestValidateConfig_EmptyAMIOwners verifies that empty AMIOwners
-// returns a non-nil error.
 func TestValidateConfig_EmptyAMIOwners(t *testing.T) {
 	cfg := testConfig()
 	cfg.AMIOwners = ""
@@ -518,8 +410,6 @@ func TestValidateConfig_EmptyAMIOwners(t *testing.T) {
 	requireError(t, err, "validateConfig empty AMIOwners")
 }
 
-// TestValidateConfig_EmptyGoVersion verifies that an empty GoVersion
-// returns a non-nil error.
 func TestValidateConfig_EmptyGoVersion(t *testing.T) {
 	cfg := testConfig()
 	cfg.GoVersion = ""
@@ -527,8 +417,6 @@ func TestValidateConfig_EmptyGoVersion(t *testing.T) {
 	requireError(t, err, "validateConfig empty GoVersion")
 }
 
-// TestValidateConfig_EmptyLemmingsPackage verifies that an empty
-// LemmingsPackage returns a non-nil error.
 func TestValidateConfig_EmptyLemmingsPackage(t *testing.T) {
 	cfg := testConfig()
 	cfg.LemmingsPackage = ""
@@ -536,8 +424,6 @@ func TestValidateConfig_EmptyLemmingsPackage(t *testing.T) {
 	requireError(t, err, "validateConfig empty LemmingsPackage")
 }
 
-// TestValidateConfig_ZeroRootVolumeSize verifies that a zero
-// RootVolumeSize returns a non-nil error.
 func TestValidateConfig_ZeroRootVolumeSize(t *testing.T) {
 	cfg := testConfig()
 	cfg.RootVolumeSize = 0
@@ -545,8 +431,6 @@ func TestValidateConfig_ZeroRootVolumeSize(t *testing.T) {
 	requireError(t, err, "validateConfig zero RootVolumeSize")
 }
 
-// TestValidateConfig_InvalidRootVolumeType verifies that an invalid
-// RootVolumeType returns a non-nil error.
 func TestValidateConfig_InvalidRootVolumeType(t *testing.T) {
 	cfg := testConfig()
 	cfg.RootVolumeType = "invalid"
@@ -554,8 +438,6 @@ func TestValidateConfig_InvalidRootVolumeType(t *testing.T) {
 	requireError(t, err, "validateConfig invalid RootVolumeType")
 }
 
-// TestValidateConfig_ZeroTempVolumeSize verifies that a zero
-// TempVolumeSize returns a non-nil error.
 func TestValidateConfig_ZeroTempVolumeSize(t *testing.T) {
 	cfg := testConfig()
 	cfg.TempVolumeSize = 0
@@ -563,8 +445,6 @@ func TestValidateConfig_ZeroTempVolumeSize(t *testing.T) {
 	requireError(t, err, "validateConfig zero TempVolumeSize")
 }
 
-// TestValidateConfig_InvalidTempVolumeType verifies that an invalid
-// TempVolumeType returns a non-nil error.
 func TestValidateConfig_InvalidTempVolumeType(t *testing.T) {
 	cfg := testConfig()
 	cfg.TempVolumeType = "magnetic"
@@ -572,8 +452,6 @@ func TestValidateConfig_InvalidTempVolumeType(t *testing.T) {
 	requireError(t, err, "validateConfig invalid TempVolumeType")
 }
 
-// TestValidateConfig_ValidVolumeTypes verifies that all accepted
-// volume types pass validation.
 func TestValidateConfig_ValidVolumeTypes(t *testing.T) {
 	for _, vt := range []string{"gp2", "gp3", "io2"} {
 		cfg := testConfig()
@@ -586,49 +464,24 @@ func TestValidateConfig_ValidVolumeTypes(t *testing.T) {
 
 // -- exampleConfigFile -------------------------------------------------------
 
-// TestExampleConfigFile_NonEmpty verifies that exampleConfigFile
-// returns a non-empty string.
 func TestExampleConfigFile_NonEmpty(t *testing.T) {
 	got := exampleConfigFile()
 	requireTrue(t, len(got) > 0, "exampleConfigFile non-empty")
 }
 
-// TestExampleConfigFile_IsValidYAML verifies that the example config
-// can be parsed as a SovereignConfigFile without error.
 func TestExampleConfigFile_IsValidYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "example.yml")
 	err := os.WriteFile(path, []byte(exampleConfigFile()), 0644)
 	requireNoError(t, err, "write example config file")
 
-	cfg := SovereignConfig{
-		Hit:              defaultHit,
-		Planets:          defaultPlanets,
-		Terrain:          defaultTerrain,
-		Pack:             defaultPack,
-		Until:            defaultUntil,
-		Ramp:             defaultRamp,
-		SaveTo:           []string{defaultSaveTo},
-		ProvisionTimeout: defaultProvisionTimeout,
-		TerminateTimeout: defaultTerminateTimeout,
-		Provider:         defaultProvider,
-		RemoteUser:       defaultRemoteUser,
-		AMIOS:            defaultAMIOS,
-		AMIOwners:        defaultAMIOwners,
-		GoVersion:        defaultGoVersion,
-		LemmingsPackage:  defaultLemmingsPackage,
-		RootVolumeSize:   defaultRootVolumeSize,
-		RootVolumeType:   defaultRootVolumeType,
-		TempVolumeSize:   defaultTempVolumeSize,
-		TempVolumeType:   defaultTempVolumeType,
-	}
+	cfg := SovereignConfig{}
 	err = loadConfigFile(path, &cfg)
 	requireNoError(t, err, "exampleConfigFile parses as valid YAML")
 }
 
 // -- Benchmarks --------------------------------------------------------------
 
-// BenchmarkValidateConfig measures validateConfig throughput.
 func BenchmarkValidateConfig(b *testing.B) {
 	cfg := testConfig()
 	b.ResetTimer()
@@ -637,7 +490,6 @@ func BenchmarkValidateConfig(b *testing.B) {
 	}
 }
 
-// BenchmarkMergeConfigFile measures mergeConfigFile throughput.
 func BenchmarkMergeConfigFile(b *testing.B) {
 	file := &SovereignConfigFile{
 		Hit:              "https://bench.example.com",
@@ -661,35 +513,13 @@ func BenchmarkMergeConfigFile(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cfg := SovereignConfig{
-			Hit:              defaultHit,
-			Planets:          defaultPlanets,
-			Terrain:          defaultTerrain,
-			Pack:             defaultPack,
-			Until:            defaultUntil,
-			Ramp:             defaultRamp,
-			SaveTo:           []string{defaultSaveTo},
-			ProvisionTimeout: defaultProvisionTimeout,
-			TerminateTimeout: defaultTerminateTimeout,
-			Provider:         defaultProvider,
-			RemoteUser:       defaultRemoteUser,
-			AMIOS:            defaultAMIOS,
-			AMIOwners:        defaultAMIOwners,
-			GoVersion:        defaultGoVersion,
-			LemmingsPackage:  defaultLemmingsPackage,
-			RootVolumeSize:   defaultRootVolumeSize,
-			RootVolumeType:   defaultRootVolumeType,
-			TempVolumeSize:   defaultTempVolumeSize,
-			TempVolumeType:   defaultTempVolumeType,
-		}
+		cfg := SovereignConfig{}
 		mergeConfigFile(file, &cfg)
 	}
 }
 
 // -- Fuzz --------------------------------------------------------------------
 
-// FuzzMergeConfigFile verifies that mergeConfigFile never panics on
-// arbitrary duration string inputs.
 func FuzzMergeConfigFile(f *testing.F) {
 	f.Add("30s", "5m", "5m", "5m")
 	f.Add("", "", "", "")
@@ -705,34 +535,36 @@ func FuzzMergeConfigFile(f *testing.F) {
 			ProvisionTimeout: provTimeout,
 			TerminateTimeout: termTimeout,
 		}
-		cfg := SovereignConfig{
-			Until:            defaultUntil,
-			Ramp:             defaultRamp,
-			ProvisionTimeout: defaultProvisionTimeout,
-			TerminateTimeout: defaultTerminateTimeout,
-		}
+		cfg := SovereignConfig{}
 		_ = mergeConfigFile(file, &cfg)
 	})
 }
 
-// FuzzDomainFromURL verifies that domainFromURL never panics and
-// always returns a non-empty string for non-empty input.
 func FuzzDomainFromURL(f *testing.F) {
 	f.Add("https://example.com")
 	f.Add("http://localhost:8080/")
 	f.Add("https://myapp.com/path/to/resource")
 	f.Add("")
+	f.Add("/")
 
 	f.Fuzz(func(t *testing.T, url string) {
 		got := domainFromURL(url)
-		if len(url) > 0 && len(got) == 0 {
-			t.Errorf("domainFromURL(%q) returned empty string for non-empty input", url)
+		// Replicate the scheme-stripping domainFromURL does to determine
+		// whether a host component exists in the input. If no host
+		// component exists, an empty result is correct.
+		stripped := strings.TrimPrefix(url, "https://")
+		stripped = strings.TrimPrefix(stripped, "http://")
+		host := strings.Split(stripped, "/")[0]
+		if host == "" {
+			return
+		}
+		if len(got) == 0 {
+			t.Errorf("domainFromURL(%q) returned empty string for input with host %q",
+				url, host)
 		}
 	})
 }
 
-// FuzzFormatBytes verifies that formatBytes never panics and always
-// returns a non-empty string for non-negative input.
 func FuzzFormatBytes(f *testing.F) {
 	f.Add(int64(0))
 	f.Add(int64(1024))

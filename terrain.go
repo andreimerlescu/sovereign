@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/andreimerlescu/sovereign/pkg/events"
-	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
+	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform/provider"
 )
 
 // provisionTerrain provisions all planets using the configured provider.

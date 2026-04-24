@@ -1,0 +1,8 @@
+summaries/
+.idea/
+.vscode/
+bin/*
+!bin/.keep
+.DS_Store
+.sovereignd/
+testdata/

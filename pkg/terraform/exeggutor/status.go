@@ -1,4 +1,4 @@
-package terraform_exeggutor
+package exeggutor
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
+	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform/provider"
 )
 
 // showState is the subset of terraform show -json output that

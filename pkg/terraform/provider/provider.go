@@ -1,4 +1,4 @@
-package terraform_provider
+package provider
 
 import (
 	"context"
@@ -134,22 +134,22 @@ const (
 // UnloadState removes it from memory without deleting the file.
 // The file persists until the planet is fully destroyed and cleaned up.
 type ProviderState struct {
-	PlanetID      int             `yaml:"PlanetID"`
-	Provider      string          `yaml:"Provider"`
-	Region        string          `yaml:"Region"`
-	Zone          string          `yaml:"Zone"`
-	Status        LifecycleStatus `yaml:"Status"`
-	InstanceID    string          `yaml:"InstanceID,omitempty"`
-	PublicIPv4    string          `yaml:"PublicIPv4,omitempty"`
-	PrivateIPv4   string          `yaml:"PrivateIPv4,omitempty"`
-	TerraformDir  string          `yaml:"TerraformDir"`
-	StateFile     string          `yaml:"StateFile"`
-	LastTransition time.Time      `yaml:"LastTransition"`
-	InitializedAt time.Time       `yaml:"InitializedAt,omitempty"`
-	AppliedAt     time.Time       `yaml:"AppliedAt,omitempty"`
-	DestroyedAt   time.Time       `yaml:"DestroyedAt,omitempty"`
-	InterruptedAt time.Time       `yaml:"InterruptedAt,omitempty"`
-	HCLBackups    []HCLBackup     `yaml:"HCLBackups,omitempty"`
+	PlanetID       int             `yaml:"PlanetID"`
+	Provider       string          `yaml:"Provider"`
+	Region         string          `yaml:"Region"`
+	Zone           string          `yaml:"Zone"`
+	Status         LifecycleStatus `yaml:"Status"`
+	InstanceID     string          `yaml:"InstanceID,omitempty"`
+	PublicIPv4     string          `yaml:"PublicIPv4,omitempty"`
+	PrivateIPv4    string          `yaml:"PrivateIPv4,omitempty"`
+	TerraformDir   string          `yaml:"TerraformDir"`
+	StateFile      string          `yaml:"StateFile"`
+	LastTransition time.Time       `yaml:"LastTransition"`
+	InitializedAt  time.Time       `yaml:"InitializedAt,omitempty"`
+	AppliedAt      time.Time       `yaml:"AppliedAt,omitempty"`
+	DestroyedAt    time.Time       `yaml:"DestroyedAt,omitempty"`
+	InterruptedAt  time.Time       `yaml:"InterruptedAt,omitempty"`
+	HCLBackups     []HCLBackup     `yaml:"HCLBackups,omitempty"`
 }
 
 // HCLBackup records a successful HCL render with a timestamp.

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -57,7 +56,10 @@ func (s *Sovereign) estimateCost() (*CostEstimate, error) {
 	}
 
 	pricer := pricing.NewVantagePricer()
-	estimate, err := pricing.EstimateCost(s.ctx, pricer, cfg, fmt.Printf)
+	printf := func(format string, args ...any) {
+		fmt.Printf(format, args...)
+	}
+	estimate, err := pricing.EstimateCost(s.ctx, pricer, cfg, printf)
 	if err != nil {
 		return nil, fmt.Errorf("cost: estimate: %w", err)
 	}

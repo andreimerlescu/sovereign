@@ -4,7 +4,6 @@
 > Sovereign provisions terrain, deploys agents, collects results,
 > and renders unified reports across geographic origins.
 
-
 [![Go](https://github.com/andreimerlescu/sovereign/actions/workflows/sovereign.yml/badge.svg)](https://github.com/andreimerlescu/sovereign/actions/workflows/sovereign.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/andreimerlescu/sovereign)](https://goreportcard.com/report/github.com/andreimerlescu/sovereign)
 [![GoDoc](https://pkg.go.dev/badge/github.com/andreimerlescu/sovereign.svg)](https://pkg.go.dev/github.com/andreimerlescu/sovereign)
@@ -25,10 +24,9 @@ performs under load from every origin simultaneously -- multiple
 regions, multiple cloud providers, hundreds of thousands of lemmings
 running concurrently across the globe -- with a single command.
 
-Sovereign provisions cloud infrastructure directly via Terraform. It
-does not depend on topobuilder. It installs lemmings on each planet,
-runs the load test, collects results, and destroys the infrastructure
-when done.
+Sovereign provisions cloud infrastructure directly via Terraform. It 
+installs lemmings on each planet, runs the load test, collects results, 
+and destroys the infrastructure when done.
 
 ---
 
@@ -62,11 +60,11 @@ sovereign knows everything.
 ### 1. Cost Estimation
 
 Before provisioning any infrastructure, sovereign queries
-instances.vantage.sh for current AWS on-demand pricing for each
-planet's region and instance type. The estimate is printed and
-confirmation is requested before any infrastructure is created.
-The --yes flag skips confirmation for automated pipelines.
-The --dry-run flag exits after the estimate without provisioning.
+instances.vantage.sh for current on-demand pricing for each planet's
+region and instance type. The estimate is printed and confirmation is
+requested before any infrastructure is created. The --yes flag skips
+confirmation for automated pipelines. The --dry-run flag exits after
+the estimate without provisioning.
 
 ### 2. Terrain Provisioning
 
@@ -105,23 +103,21 @@ Sovereign reads the lemmings YAML report from each completed planet,
 merges all results into a unified report, and delivers it to all
 configured save-to destinations as both markdown and HTML.
 
-The unified report includes:
-
-    -- Total visits across all planets and all terrains
-    -- Per-planet breakdown showing geographic performance differences
-    -- Per-path breakdown aggregated globally
-    -- Timing percentiles at global, per-planet, and per-path level
-    -- Waiting room metrics aggregated across all origins
-    -- Lost planet summary with instance IDs for manual intervention
-    -- Projected cost based on instance hours consumed
+The unified report includes total visits across all planets and all
+terrains, per-planet breakdown showing geographic performance
+differences, per-path breakdown aggregated globally, timing
+percentiles at global and per-planet level, waiting room metrics
+aggregated across all origins, lost planet summary with instance IDs
+for manual intervention, and projected cost based on instance hours
+consumed.
 
 ### 6. Terrain Destruction
 
-All planets are destroyed concurrently via terraform destroy. Sovereign
-waits for confirmation that all instances have been terminated before
-exiting. If any planet fails to terminate within the timeout, sovereign
-logs the instance IDs that require manual intervention in AWS and exits
-with a non-zero status.
+All planets are destroyed concurrently via terraform destroy.
+Sovereign waits for confirmation that all instances have been
+terminated before exiting. If any planet fails to terminate within
+the timeout, sovereign logs the instance IDs that require manual
+intervention and exits with a non-zero status.
 
 ---
 
@@ -142,15 +138,11 @@ The ledger is an append-only audit log of every lifecycle event:
     ~/.sovereignd/runs/<timestamp>/ledger.yml
 
 On restart, sovereign reads the ledger to determine what each planet
-has already accomplished and routes accordingly:
-
-    Planet with collect complete event  -- skip entirely
-    Planet with provision complete event -- resume from lemmings phase
-    Planet with interrupted apply        -- resume with terraform apply
-    Planet with no usable state          -- provision from scratch
-
-This means a crash at any point in the run does not orphan AWS
-infrastructure and does not duplicate work that already succeeded.
+has already accomplished and routes accordingly. A planet with a
+collect complete event is skipped entirely. A planet with a provision
+complete event skips provisioning and resumes from lemmings execution.
+A planet with an interrupted apply resumes with terraform apply. A
+planet with no usable state provisions from scratch.
 
 ---
 
@@ -160,16 +152,20 @@ Sovereign uses a TerraformProvider interface. Each cloud provider
 generates its own Terraform HCL and implements the same lifecycle
 contract. The provider is selected via the --provider flag.
 
-Currently implemented:
+Currently implemented providers:
 
-    aws          -- fully implemented
+    aws            fully implemented
+    digitalocean   fully implemented
+    ovh            fully implemented
 
-Stubbed (not yet implemented):
+Providers that have been removed and are not available:
 
-    digitalocean
-    gcp
-    oci
-    ovh
+    gcp            removed -- enterprise on-demand only
+    oci            removed -- enterprise on-demand only
+
+Passing --provider gcp or --provider oci will return an error at
+startup. Do not add stub packages for these providers without a
+full implementation.
 
 ---
 
@@ -183,7 +179,7 @@ Ensure terraform is in PATH:
 
     terraform -version
 
-Set required environment variables:
+Set required environment variables for AWS:
 
     export AWS_ACCESS_KEY=...
     export AWS_ACCESS_SECRET_KEY=...
@@ -243,8 +239,8 @@ Run with a plan file across three planets:
 
 ### Infrastructure
 
-    --provider, -pv        Cloud provider: aws (default)
-    --region, -rg          AWS regions to deploy into (repeatable)
+    --provider, -pv        Cloud provider: aws, digitalocean, ovh
+    --region, -rg          Regions to deploy into (repeatable)
     --instance, -i         Instance type per planet -- REQUIRED
     --yes, -y              Skip cost confirmation prompt
     --dry-run, -dr         Estimate cost and exit without provisioning
@@ -264,7 +260,6 @@ Run with a plan file across three planets:
 
     --go-version, -gv      Go version to install via igo (default: 1.25.0)
     --lemmings-package     Lemmings package path for go install
-                           (default: github.com/andreimerlescu/lemmings@latest)
 
 ### EBS Volumes
 
@@ -282,8 +277,13 @@ Run with a plan file across three planets:
 ## The Sovereign Configuration File
 
 For repeatable runs, sovereign accepts a YAML configuration file
-via --config. All flags can be expressed in the config file.
-Flags always override config file values when both are present.
+via --config. All flags can be expressed in the config file. Flags
+always override config file values when both are present. The merge
+strategy uses zero-value detection: a config field is only merged
+from the file if the corresponding struct field is its zero value
+(empty string, zero int, zero duration). This means any flag
+explicitly set by the operator -- even one that equals a default --
+is preserved and never overwritten.
 
     sovereign --config sovereign.yml
 
@@ -330,15 +330,32 @@ Example sovereign.yml:
 
 ## Environment Variables
 
-Required:
+Required for AWS:
 
     AWS_ACCESS_KEY              AWS access key ID
     AWS_ACCESS_SECRET_KEY       AWS secret access key
     SOVEREIGN_SUBNET_ID         Subnet ID for planet instances
     SOVEREIGN_SECURITY_GROUP    Security group ID for planet instances
 
-These are never written to disk or into Terraform HCL files. They are
-passed to the terraform subprocess via environment variables only.
+Required for DigitalOcean:
+
+    DIGITALOCEAN_TOKEN          DigitalOcean personal access token
+
+Required for OVH:
+
+    OVH_ENDPOINT                API endpoint: ovh-eu, ovh-us, ovh-ca
+    OVH_APPLICATION_KEY         OVH application key
+    OVH_APPLICATION_SECRET      OVH application secret
+    OVH_CONSUMER_KEY            OVH consumer key
+    OS_AUTH_URL                 OpenStack identity endpoint
+    OS_TENANT_ID                OpenStack project ID
+    OS_TENANT_NAME              OpenStack project name
+    OS_USERNAME                 OpenStack username
+    OS_PASSWORD                 OpenStack password
+    OS_REGION_NAME              OpenStack region name
+
+Credentials are never written to disk or into Terraform HCL files.
+They are passed to the terraform subprocess via environment variables.
 
 ---
 
@@ -346,17 +363,16 @@ passed to the terraform subprocess via environment variables only.
 
 Runtime dependencies that must be present in PATH:
 
-    terraform    -- infrastructure provisioning
-    ssh          -- lemmings execution on remote planets
-    scp          -- plan file delivery and result collection
+    terraform    infrastructure provisioning
+    ssh          lemmings execution on remote planets
+    scp          plan file delivery and result collection
 
 Lemmings is installed on each planet at provisioning time via:
 
     go install github.com/andreimerlescu/lemmings@latest
 
 Cost estimation uses the public instances.vantage.sh API. No API key
-is required. A pricing failure for a planet is non-fatal -- the run
-continues with a zero cost estimate for the affected planet.
+is required. A pricing failure for a planet is non-fatal.
 
 ---
 
@@ -389,4 +405,4 @@ of its own. The sovereign is the engineer -- the one who decides
 the plan, commands the terrain, and reads the report.
 
 Sovereign is the application that makes the engineer's intent real
-across the globe.​​​​​​​​​​​​​​​​
+across the globe.

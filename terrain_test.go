@@ -5,18 +5,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
-	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform_provider"
+	"github.com/andreimerlescu/sovereign/pkg/events"
+	tfprovider "github.com/andreimerlescu/sovereign/pkg/terraform/provider"
 )
 
 // -- MockTerraformProvider ---------------------------------------------------
 
-// MockTerraformProvider is a test double for TerraformProvider that
-// records calls and returns configurable responses. Used to test
-// terrain.go logic without spawning real terraform processes.
 type MockTerraformProvider struct {
+	mu            sync.Mutex
 	name          string
 	validateErr   error
 	renderErr     error
@@ -51,44 +51,70 @@ func newMockProvider() *MockTerraformProvider {
 	}
 }
 
-func (m *MockTerraformProvider) Name() string  { return m.name }
-func (m *MockTerraformProvider) Validate() error { return m.validateErr }
+func (m *MockTerraformProvider) Name() string { return m.name }
+func (m *MockTerraformProvider) Validate() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.validateErr
+}
 
 func (m *MockTerraformProvider) RenderHCL(spec tfprovider.HCLSpec) error {
+	m.mu.Lock()
 	m.renderedSpecs = append(m.renderedSpecs, spec)
-	return m.renderErr
+	err := m.renderErr
+	m.mu.Unlock()
+	return err
 }
 
-func (m *MockTerraformProvider) Init(ctx context.Context, spec tfprovider.PlanetSpec) error {
+func (m *MockTerraformProvider) Init(_ context.Context, _ tfprovider.PlanetSpec) error {
+	m.mu.Lock()
 	m.initCalls++
-	return m.initErr
+	err := m.initErr
+	m.mu.Unlock()
+	return err
 }
 
-func (m *MockTerraformProvider) InitOrApply(ctx context.Context, spec tfprovider.PlanetSpec) error {
+func (m *MockTerraformProvider) InitOrApply(_ context.Context, _ tfprovider.PlanetSpec) error {
+	m.mu.Lock()
 	m.initCalls++
 	m.applyCalls++
-	if m.initErr != nil {
-		return m.initErr
+	initErr := m.initErr
+	applyErr := m.applyErr
+	m.mu.Unlock()
+	if initErr != nil {
+		return initErr
 	}
-	return m.applyErr
+	return applyErr
 }
 
-func (m *MockTerraformProvider) Apply(ctx context.Context, spec tfprovider.PlanetSpec) error {
+func (m *MockTerraformProvider) Apply(_ context.Context, _ tfprovider.PlanetSpec) error {
+	m.mu.Lock()
 	m.applyCalls++
-	return m.applyErr
+	err := m.applyErr
+	m.mu.Unlock()
+	return err
 }
 
-func (m *MockTerraformProvider) Destroy(ctx context.Context, spec tfprovider.PlanetSpec) error {
+func (m *MockTerraformProvider) Destroy(_ context.Context, _ tfprovider.PlanetSpec) error {
+	m.mu.Lock()
 	m.destroyCalls++
-	return m.destroyErr
+	err := m.destroyErr
+	m.mu.Unlock()
+	return err
 }
 
-func (m *MockTerraformProvider) Output(ctx context.Context, spec tfprovider.PlanetSpec) (*tfprovider.ProvisionOutput, error) {
+func (m *MockTerraformProvider) Output(_ context.Context, _ tfprovider.PlanetSpec) (*tfprovider.ProvisionOutput, error) {
+	m.mu.Lock()
 	m.outputCalls++
-	return m.outputResult, m.outputErr
+	result := m.outputResult
+	err := m.outputErr
+	m.mu.Unlock()
+	return result, err
 }
 
-func (m *MockTerraformProvider) Status(ctx context.Context, spec tfprovider.PlanetSpec) (tfprovider.LifecycleStatus, error) {
+func (m *MockTerraformProvider) Status(_ context.Context, _ tfprovider.PlanetSpec) (tfprovider.LifecycleStatus, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.statusResult, m.statusErr
 }
 
@@ -96,23 +122,25 @@ func (m *MockTerraformProvider) StateBackend(spec tfprovider.PlanetSpec) (string
 	return filepath.Join(spec.WorkDir, "terraform", "terraform.tfstate"), nil
 }
 
-func (m *MockTerraformProvider) LoadState(spec tfprovider.PlanetSpec) (*tfprovider.ProviderState, error) {
+func (m *MockTerraformProvider) LoadState(_ tfprovider.PlanetSpec) (*tfprovider.ProviderState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.stateResult, m.stateErr
 }
 
-func (m *MockTerraformProvider) SaveState(spec tfprovider.PlanetSpec, state *tfprovider.ProviderState) error {
+func (m *MockTerraformProvider) SaveState(_ tfprovider.PlanetSpec, state *tfprovider.ProviderState) error {
+	m.mu.Lock()
 	m.savedStates = append(m.savedStates, state)
+	m.mu.Unlock()
 	return nil
 }
 
-func (m *MockTerraformProvider) UnloadState(spec tfprovider.PlanetSpec) error {
+func (m *MockTerraformProvider) UnloadState(_ tfprovider.PlanetSpec) error {
 	return nil
 }
 
 // -- test helper -------------------------------------------------------------
 
-// testSovereignWithMockProvider constructs a Sovereign with a mock
-// provider for terrain tests.
 func testSovereignWithMockProvider(t *testing.T, mock *MockTerraformProvider) *Sovereign {
 	t.Helper()
 	s := testSovereign(t)
@@ -122,8 +150,6 @@ func testSovereignWithMockProvider(t *testing.T, mock *MockTerraformProvider) *S
 
 // -- planetSpec --------------------------------------------------------------
 
-// TestPlanetSpec_FieldsPopulated verifies that planetSpec correctly
-// populates PlanetSpec from a planet.
 func TestPlanetSpec_FieldsPopulated(t *testing.T) {
 	s := testSovereign(t)
 	planet := testPlanet(3)
@@ -138,8 +164,6 @@ func TestPlanetSpec_FieldsPopulated(t *testing.T) {
 		"planetSpec WorkDir contains planet ID")
 }
 
-// TestPlanetSpec_ZoneDerivesFromRegion verifies that the zone is
-// derived from the region by appending 'a'.
 func TestPlanetSpec_ZoneDerivesFromRegion(t *testing.T) {
 	s := testSovereign(t)
 	planet := testPlanet(1)
@@ -151,8 +175,6 @@ func TestPlanetSpec_ZoneDerivesFromRegion(t *testing.T) {
 
 // -- hclSpec -----------------------------------------------------------------
 
-// TestHCLSpec_FieldsPopulated verifies that hclSpec correctly
-// populates HCLSpec from a planet and config.
 func TestHCLSpec_FieldsPopulated(t *testing.T) {
 	t.Setenv("SOVEREIGN_SUBNET_ID", "subnet-test123")
 	t.Setenv("SOVEREIGN_SECURITY_GROUP", "sg-test456")
@@ -186,8 +208,6 @@ func TestHCLSpec_FieldsPopulated(t *testing.T) {
 	requireEqual(t, spec.SaveTo, "/home/rocky/lemmings", "hclSpec SaveTo")
 }
 
-// TestHCLSpec_SlugContainsPlanetID verifies that the slug contains
-// the planet ID for resource naming.
 func TestHCLSpec_SlugContainsPlanetID(t *testing.T) {
 	s := testSovereign(t)
 	planet := testPlanet(7)
@@ -198,13 +218,11 @@ func TestHCLSpec_SlugContainsPlanetID(t *testing.T) {
 
 // -- markLost ----------------------------------------------------------------
 
-// TestMarkLost_SetsPlanetStatusLost verifies that markLost sets the
-// planet status to PlanetStatusLost.
 func TestMarkLost_SetsPlanetStatusLost(t *testing.T) {
 	s := testSovereignWithMockProvider(t, newMockProvider())
 	planet := testPlanet(1)
 
-	err := s.markLost(planet, LedgerEventProvisionFailed,
+	err := s.markLost(planet, events.KindProvisionFailed,
 		fmt.Errorf("simulated failure"))
 
 	requireError(t, err, "markLost returns error")
@@ -212,37 +230,31 @@ func TestMarkLost_SetsPlanetStatusLost(t *testing.T) {
 		"markLost sets PlanetStatusLost")
 }
 
-// TestMarkLost_AppendsLedgerEvent verifies that markLost appends
-// the failure event to the ledger.
 func TestMarkLost_AppendsLedgerEvent(t *testing.T) {
 	s := testSovereignWithMockProvider(t, newMockProvider())
 	planet := testPlanet(1)
 
-	s.markLost(planet, LedgerEventProvisionFailed,
+	s.markLost(planet, events.KindProvisionFailed,
 		fmt.Errorf("simulated failure"))
 
-	last := s.ledger.LastEventForPlanet(1)
+	last := s.ledger.LastEntryForPlanet(1)
 	requireTrue(t, last != nil, "markLost appends ledger event")
-	requireEqual(t, last.EventType, LedgerEventProvisionFailed,
+	requireEqual(t, last.Kind, events.KindProvisionFailed,
 		"markLost appends correct event type")
 }
 
-// TestMarkLost_SetsErrorOnPlanet verifies that markLost sets the
-// Error field on the planet.
 func TestMarkLost_SetsErrorOnPlanet(t *testing.T) {
 	s := testSovereignWithMockProvider(t, newMockProvider())
 	planet := testPlanet(1)
 	simErr := fmt.Errorf("simulated failure")
 
-	s.markLost(planet, LedgerEventProvisionFailed, simErr)
+	s.markLost(planet, events.KindProvisionFailed, simErr)
 
 	requireTrue(t, planet.Error != nil, "markLost sets planet.Error")
 }
 
 // -- saveProviderState -------------------------------------------------------
 
-// TestSaveProviderState_CallsProviderSaveState verifies that
-// saveProviderState calls the provider's SaveState method.
 func TestSaveProviderState_CallsProviderSaveState(t *testing.T) {
 	mock := newMockProvider()
 	s := testSovereignWithMockProvider(t, mock)
@@ -250,12 +262,13 @@ func TestSaveProviderState_CallsProviderSaveState(t *testing.T) {
 
 	s.saveProviderState(planet, tfprovider.LifecycleApplied, nil)
 
-	requireEqual(t, len(mock.savedStates), 1,
+	mock.mu.Lock()
+	count := len(mock.savedStates)
+	mock.mu.Unlock()
+	requireEqual(t, count, 1,
 		"saveProviderState calls provider SaveState")
 }
 
-// TestSaveProviderState_StatusPreserved verifies that the status
-// passed to saveProviderState is written into the saved state.
 func TestSaveProviderState_StatusPreserved(t *testing.T) {
 	mock := newMockProvider()
 	s := testSovereignWithMockProvider(t, mock)
@@ -263,13 +276,13 @@ func TestSaveProviderState_StatusPreserved(t *testing.T) {
 
 	s.saveProviderState(planet, tfprovider.LifecycleInitialized, nil)
 
-	requireEqual(t, mock.savedStates[0].Status,
-		tfprovider.LifecycleInitialized,
+	mock.mu.Lock()
+	status := mock.savedStates[0].Status
+	mock.mu.Unlock()
+	requireEqual(t, status, tfprovider.LifecycleInitialized,
 		"saveProviderState status preserved")
 }
 
-// TestSaveProviderState_OutputPopulatesIPAndID verifies that when a
-// ProvisionOutput is provided the IP and instance ID are written.
 func TestSaveProviderState_OutputPopulatesIPAndID(t *testing.T) {
 	mock := newMockProvider()
 	s := testSovereignWithMockProvider(t, mock)
@@ -282,7 +295,9 @@ func TestSaveProviderState_OutputPopulatesIPAndID(t *testing.T) {
 	}
 	s.saveProviderState(planet, tfprovider.LifecycleApplied, out)
 
+	mock.mu.Lock()
 	saved := mock.savedStates[0]
+	mock.mu.Unlock()
 	requireEqual(t, saved.InstanceID, "i-abc123",
 		"saveProviderState InstanceID from output")
 	requireEqual(t, saved.PublicIPv4, "1.2.3.4",
@@ -291,8 +306,6 @@ func TestSaveProviderState_OutputPopulatesIPAndID(t *testing.T) {
 
 // -- provisionPlanet ---------------------------------------------------------
 
-// TestProvisionPlanet_Success verifies that a successful provision
-// cycle sets the planet to PlanetStatusRunning with IP and instance ID.
 func TestProvisionPlanet_Success(t *testing.T) {
 	mock := newMockProvider()
 	s := testSovereignWithMockProvider(t, mock)
@@ -309,8 +322,6 @@ func TestProvisionPlanet_Success(t *testing.T) {
 		"provisionPlanet sets InstanceID")
 }
 
-// TestProvisionPlanet_RenderFailureSetsLost verifies that an HCL
-// render failure marks the planet lost.
 func TestProvisionPlanet_RenderFailureSetsLost(t *testing.T) {
 	mock := newMockProvider()
 	mock.renderErr = fmt.Errorf("render failed")
@@ -324,8 +335,6 @@ func TestProvisionPlanet_RenderFailureSetsLost(t *testing.T) {
 		"provisionPlanet render failure sets lost")
 }
 
-// TestProvisionPlanet_InitFailureSetsLost verifies that a terraform
-// init failure marks the planet lost.
 func TestProvisionPlanet_InitFailureSetsLost(t *testing.T) {
 	mock := newMockProvider()
 	mock.initErr = fmt.Errorf("init failed")
@@ -339,8 +348,6 @@ func TestProvisionPlanet_InitFailureSetsLost(t *testing.T) {
 		"provisionPlanet init failure sets lost")
 }
 
-// TestProvisionPlanet_ApplyFailureSetsLost verifies that a terraform
-// apply failure marks the planet lost.
 func TestProvisionPlanet_ApplyFailureSetsLost(t *testing.T) {
 	mock := newMockProvider()
 	mock.applyErr = fmt.Errorf("apply failed")
@@ -354,8 +361,6 @@ func TestProvisionPlanet_ApplyFailureSetsLost(t *testing.T) {
 		"provisionPlanet apply failure sets lost")
 }
 
-// TestProvisionPlanet_OutputFailureSetsLost verifies that a terraform
-// output failure marks the planet lost.
 func TestProvisionPlanet_OutputFailureSetsLost(t *testing.T) {
 	mock := newMockProvider()
 	mock.outputErr = fmt.Errorf("output failed")
@@ -369,8 +374,6 @@ func TestProvisionPlanet_OutputFailureSetsLost(t *testing.T) {
 		"provisionPlanet output failure sets lost")
 }
 
-// TestProvisionPlanet_LedgerRecordsProvisionComplete verifies that
-// a successful provision records a complete event in the ledger.
 func TestProvisionPlanet_LedgerRecordsProvisionComplete(t *testing.T) {
 	mock := newMockProvider()
 	s := testSovereignWithMockProvider(t, mock)
@@ -384,8 +387,6 @@ func TestProvisionPlanet_LedgerRecordsProvisionComplete(t *testing.T) {
 
 // -- destroyPlanet -----------------------------------------------------------
 
-// TestDestroyPlanet_Success verifies that a successful destroy
-// completes without error.
 func TestDestroyPlanet_Success(t *testing.T) {
 	mock := newMockProvider()
 	s := testSovereignWithMockProvider(t, mock)
@@ -394,12 +395,13 @@ func TestDestroyPlanet_Success(t *testing.T) {
 	err := s.destroyPlanet(planet)
 
 	requireNoError(t, err, "destroyPlanet success")
-	requireEqual(t, mock.destroyCalls, 1,
+	mock.mu.Lock()
+	calls := mock.destroyCalls
+	mock.mu.Unlock()
+	requireEqual(t, calls, 1,
 		"destroyPlanet calls provider Destroy once")
 }
 
-// TestDestroyPlanet_FailureReturnsError verifies that a provider
-// destroy failure returns a non-nil error.
 func TestDestroyPlanet_FailureReturnsError(t *testing.T) {
 	mock := newMockProvider()
 	mock.destroyErr = fmt.Errorf("destroy failed")
@@ -411,8 +413,6 @@ func TestDestroyPlanet_FailureReturnsError(t *testing.T) {
 	requireError(t, err, "destroyPlanet failure returns error")
 }
 
-// TestDestroyPlanet_LedgerRecordsDestroyComplete verifies that a
-// successful destroy records a complete event in the ledger.
 func TestDestroyPlanet_LedgerRecordsDestroyComplete(t *testing.T) {
 	mock := newMockProvider()
 	s := testSovereignWithMockProvider(t, mock)
@@ -420,16 +420,14 @@ func TestDestroyPlanet_LedgerRecordsDestroyComplete(t *testing.T) {
 
 	s.destroyPlanet(planet)
 
-	last := s.ledger.LastEventForPlanet(1)
+	last := s.ledger.LastEntryForPlanet(1)
 	requireTrue(t, last != nil, "destroyPlanet ledger event exists")
-	requireEqual(t, last.EventType, LedgerEventDestroyComplete,
+	requireEqual(t, last.Kind, events.KindDestroyComplete,
 		"destroyPlanet ledger records destroy complete")
 }
 
 // -- planetWorkDir -----------------------------------------------------------
 
-// TestPlanetWorkDir_ContainsPlanetID verifies that the work directory
-// path includes the planet ID.
 func TestPlanetWorkDir_ContainsPlanetID(t *testing.T) {
 	s := testSovereign(t)
 	planet := testPlanet(5)
@@ -442,8 +440,6 @@ func TestPlanetWorkDir_ContainsPlanetID(t *testing.T) {
 
 // -- provisionTerrain --------------------------------------------------------
 
-// TestProvisionTerrain_SinglePlanet verifies that a single planet
-// is provisioned successfully.
 func TestProvisionTerrain_SinglePlanet(t *testing.T) {
 	mock := newMockProvider()
 	s := testSovereignWithMockProvider(t, mock)
@@ -457,8 +453,6 @@ func TestProvisionTerrain_SinglePlanet(t *testing.T) {
 		"provisionTerrain single planet running")
 }
 
-// TestProvisionTerrain_EmptyPlanetsReturnsError verifies that an
-// empty planet slice returns an error.
 func TestProvisionTerrain_EmptyPlanetsReturnsError(t *testing.T) {
 	mock := newMockProvider()
 	s := testSovereignWithMockProvider(t, mock)
@@ -469,8 +463,6 @@ func TestProvisionTerrain_EmptyPlanetsReturnsError(t *testing.T) {
 	requireError(t, err, "provisionTerrain empty planets")
 }
 
-// TestProvisionTerrain_FirstPlanetFailureReturnsError verifies that
-// a first planet failure returns an error immediately.
 func TestProvisionTerrain_FirstPlanetFailureReturnsError(t *testing.T) {
 	mock := newMockProvider()
 	mock.initErr = fmt.Errorf("init failed")
@@ -483,8 +475,6 @@ func TestProvisionTerrain_FirstPlanetFailureReturnsError(t *testing.T) {
 	requireError(t, err, "provisionTerrain first planet failure")
 }
 
-// TestProvisionTerrain_MultiplePlanets verifies that multiple planets
-// are all provisioned when the provider succeeds.
 func TestProvisionTerrain_MultiplePlanets(t *testing.T) {
 	mock := newMockProvider()
 	s := testSovereignWithMockProvider(t, mock)
@@ -503,8 +493,6 @@ func TestProvisionTerrain_MultiplePlanets(t *testing.T) {
 
 // -- destroyTerrain ----------------------------------------------------------
 
-// TestDestroyTerrain_AllPlanets verifies that all provisioned planets
-// are destroyed.
 func TestDestroyTerrain_AllPlanets(t *testing.T) {
 	mock := newMockProvider()
 	s := testSovereignWithMockProvider(t, mock)
@@ -517,17 +505,18 @@ func TestDestroyTerrain_AllPlanets(t *testing.T) {
 	err := s.destroyTerrain()
 
 	requireNoError(t, err, "destroyTerrain all planets")
-	requireEqual(t, mock.destroyCalls, 3,
+	mock.mu.Lock()
+	calls := mock.destroyCalls
+	mock.mu.Unlock()
+	requireEqual(t, calls, 3,
 		"destroyTerrain calls destroy for each planet")
 }
 
-// TestDestroyTerrain_SkipsNeverProvisioned verifies that planets
-// with no InstanceID and PlanetStatusLost are skipped.
 func TestDestroyTerrain_SkipsNeverProvisioned(t *testing.T) {
 	mock := newMockProvider()
 	s := testSovereignWithMockProvider(t, mock)
 	lost := testLostPlanet(1)
-	lost.InstanceID = "" // never provisioned
+	lost.InstanceID = ""
 
 	s.planets = []*Planet{
 		lost,
@@ -537,14 +526,15 @@ func TestDestroyTerrain_SkipsNeverProvisioned(t *testing.T) {
 	err := s.destroyTerrain()
 
 	requireNoError(t, err, "destroyTerrain skips never provisioned")
-	requireEqual(t, mock.destroyCalls, 1,
+	mock.mu.Lock()
+	calls := mock.destroyCalls
+	mock.mu.Unlock()
+	requireEqual(t, calls, 1,
 		"destroyTerrain only destroys provisioned planet")
 }
 
 // -- Benchmarks --------------------------------------------------------------
 
-// BenchmarkProvisionPlanet measures the provisioning path with a
-// mock provider -- excludes real terraform overhead.
 func BenchmarkProvisionPlanet(b *testing.B) {
 	mock := newMockProvider()
 	s := benchmarkSovereign(b)
@@ -563,7 +553,6 @@ func BenchmarkProvisionPlanet(b *testing.B) {
 	}
 }
 
-// BenchmarkDestroyPlanet measures the destroy path with a mock provider.
 func BenchmarkDestroyPlanet(b *testing.B) {
 	mock := newMockProvider()
 	s := benchmarkSovereign(b)
@@ -584,23 +573,18 @@ func BenchmarkDestroyPlanet(b *testing.B) {
 
 // -- helpers -----------------------------------------------------------------
 
-// writeTerraformDir creates the terraform directory structure for a
-// planet work dir, used in tests that need a pre-existing terraform dir.
 func writeTerraformDir(t *testing.T, workDir string) {
 	t.Helper()
 	tfDir := filepath.Join(workDir, "terraform")
 	if err := os.MkdirAll(tfDir, 0700); err != nil {
 		t.Fatalf("writeTerraformDir: %v", err)
 	}
-	// write a minimal state file so Status() can find it
 	stateFile := filepath.Join(tfDir, "terraform.tfstate")
 	if err := os.WriteFile(stateFile, []byte(`{"version":4}`), 0600); err != nil {
 		t.Fatalf("writeTerraformDir: write state: %v", err)
 	}
 }
 
-// testProvisionedPlanetWithWorkDir returns a provisioned planet whose
-// work directory has been created on disk.
 func testProvisionedPlanetWithWorkDir(t *testing.T, s *Sovereign, id int) *Planet {
 	t.Helper()
 	planet := testProvisionedPlanet(id)
@@ -608,7 +592,6 @@ func testProvisionedPlanetWithWorkDir(t *testing.T, s *Sovereign, id int) *Plane
 	return planet
 }
 
-// BenchmarkHCLSpec measures hclSpec construction throughput.
 func BenchmarkHCLSpec(b *testing.B) {
 	s := benchmarkSovereign(b)
 	planet := &Planet{
@@ -623,7 +606,6 @@ func BenchmarkHCLSpec(b *testing.B) {
 	}
 }
 
-// BenchmarkPlanetSpec measures planetSpec construction throughput.
 func BenchmarkPlanetSpec(b *testing.B) {
 	s := benchmarkSovereign(b)
 	planet := &Planet{
@@ -636,7 +618,6 @@ func BenchmarkPlanetSpec(b *testing.B) {
 	}
 }
 
-// timestampForTest returns a fixed timestamp for deterministic test output.
 func timestampForTest() time.Time {
 	return time.Date(2026, 4, 22, 14, 30, 0, 0, time.UTC)
 }

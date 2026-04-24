@@ -310,8 +310,8 @@ func setTestEnv(t *testing.T) {
 //
 // The response format matches what VantagePricer expects from the API.
 // instance_type and region are reflected from the query parameters.
-func newMockPricingJSONServer(t *testing.T, hourlyRateDollars float64) *httptest.Server {
-	t.Helper()
+func newMockPricingJSONServer(tb testing.TB, hourlyRateDollars float64) *httptest.Server {
+	tb.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		instanceType := r.URL.Query().Get("instance_type")
 		if instanceType == "" {
@@ -329,18 +329,18 @@ func newMockPricingJSONServer(t *testing.T, hourlyRateDollars float64) *httptest
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, body)
 	}))
-	t.Cleanup(srv.Close)
+	tb.Cleanup(srv.Close)
 	return srv
 }
 
 // newMockPricingJSONServerError starts an httptest.Server that returns
 // HTTP 500 for all requests.
-func newMockPricingJSONServerError(t *testing.T) *httptest.Server {
-	t.Helper()
+func newMockPricingJSONServerError(tb testing.TB) *httptest.Server {
+	tb.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	t.Cleanup(srv.Close)
+	tb.Cleanup(srv.Close)
 	return srv
 }
 
@@ -361,7 +361,7 @@ func writeMockLemmingsReport(t *testing.T, dir string, planetID int) string {
 
 	contents := fmt.Sprintf(`Version: test
 GeneratedAt: %s
-Duration: 30000000000
+Duration: 30s
 TotalVisits: %d
 TotalBytes: 1048576
 Total2xx: %d
@@ -370,12 +370,12 @@ Total4xx: 5
 Total5xx: 2
 TotalWaitingRoom: 3
 TotalErrors: 2
-Fastest: 1000000
-Slowest: 500000000
-P50: 20000000
-P90: 100000000
-P95: 200000000
-P99: 400000000
+Fastest: 1ms
+Slowest: 500ms
+P50: 20ms
+P90: 100ms
+P95: 200ms
+P99: 400ms
 Paths:
   - URL: http://localhost:8080/
     Hits: %d
@@ -386,8 +386,8 @@ Paths:
     XX5: 1
     WaitingRoom: 1
     Errors: 1
-    P50: 18000000
-    P99: 380000000
+    P50: 18ms
+    P99: 380ms
 `,
 		time.Now().Format(time.RFC3339),
 		100*planetID,
