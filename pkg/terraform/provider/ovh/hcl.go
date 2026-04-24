@@ -104,16 +104,12 @@ func backupHCL(spec tfprovider.HCLSpec, terraformDir string, files []hclFile) er
 
 // -- HCL Templates -----------------------------------------------------------
 //
-// OVH public cloud uses two terraform providers together:
-//   - ovh/ovh for OVH-specific resources
-//   - terraform-provider-openstack/openstack for compute resources
-//
-// All values are rendered directly from HCLSpec. No terraform variables
-// are used -- sovereign generates a complete, self-contained terraform
-// directory per planet with no external variable files required.
-//
-// Credentials are not rendered into these templates. They are passed
-// to the terraform subprocess via environment variables in env().
+// Credentials are never rendered into HCL files. OVH and OpenStack
+// credentials are passed to the terraform subprocess via environment
+// variables in env(). Both the ovh/ovh and openstack terraform providers
+// read their respective credentials from the subprocess environment
+// automatically when no credential attributes are present in the
+// provider blocks.
 
 const providerTF = `terraform {
   required_providers {
@@ -128,16 +124,10 @@ const providerTF = `terraform {
   }
 }
 
-provider "ovh" {
-  endpoint = "{{ .OVHEndpoint }}"
-}
+provider "ovh" {}
 
 provider "openstack" {
-  auth_url    = "{{ .OSAuthURL }}"
-  tenant_id   = "{{ .OSTenantID }}"
-  tenant_name = "{{ .OSTenantName }}"
-  user_name   = "{{ .OSUsername }}"
-  region      = "{{ .Region }}"
+  region = "{{ .Region }}"
 }
 `
 

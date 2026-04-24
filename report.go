@@ -12,6 +12,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/andreimerlescu/sovereign/pkg/deliverer"
 	"gopkg.in/yaml.v3"
 )
 
@@ -90,7 +91,7 @@ type UnifiedReport struct {
 type GlobalPathReport struct {
 	URL         string
 	Hits        int64
-	Bytes       string
+	Bytes       int64 // int64 -- formatBytes called at render time only
 	XX2         int64
 	XX3         int64
 	XX4         int64
@@ -162,7 +163,7 @@ func (s *Sovereign) aggregateReport() error {
 	for _, planet := range completed {
 		report, err := s.readPlanetReport(planet)
 		if err != nil {
-			fmt.Printf("  sovereign: warning: could not read report for planet %d: %v\n",
+			fmt.Fprintf(s.out, "  sovereign: warning: could not read report for planet %d: %v\n",
 				planet.ID, err)
 			continue
 		}
@@ -214,7 +215,7 @@ func (s *Sovereign) aggregateReport() error {
 				pathMap[path.URL] = gp
 			}
 			gp.Hits += path.Hits
-			gp.Bytes += formatBytesInt(path.Bytes) // TODO CLAUDE - wtf is going on here? that func needed to be updated
+			gp.Bytes += path.Bytes
 			gp.XX2 += path.XX2
 			gp.XX3 += path.XX3
 			gp.XX4 += path.XX4
@@ -269,7 +270,7 @@ func (s *Sovereign) aggregateReport() error {
 	return s.deliverReport(unified)
 }
 
-// readPlanetReport finds and parses the lemmings markdown report file
+// readPlanetReport finds and parses the lemmings YAML report file
 // from a planet's collected report directory.
 func (s *Sovereign) readPlanetReport(planet *Planet) (*lemmingsReportFile, error) {
 	reportDir := planet.ReportPath
@@ -277,9 +278,8 @@ func (s *Sovereign) readPlanetReport(planet *Planet) (*lemmingsReportFile, error
 		return nil, fmt.Errorf("planet %d has no report path", planet.ID)
 	}
 
-	// Walk the report directory for a .yml report file
-	// lemmings writes: lemmings/domain/lemmings.YYYY.MM.DD.domain.md
-	// sovereign reads the companion YAML if present or parses the markdown
+	// Walk the report directory for a .yml report file.
+	// lemmings writes: lemmings/domain/lemmings.YYYY.MM.DD.domain.yml
 	var reportFile string
 	err := filepath.WalkDir(reportDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -312,7 +312,8 @@ func (s *Sovereign) readPlanetReport(planet *Planet) (*lemmingsReportFile, error
 }
 
 // deliverReport renders the unified report as markdown and HTML and
-// writes it to all configured save-to destinations.
+// delivers it to all configured save-to destinations via the
+// deliverer package.
 func (s *Sovereign) deliverReport(unified *UnifiedReport) error {
 	md, err := renderUnifiedMarkdown(unified)
 	if err != nil {
@@ -334,34 +335,20 @@ func (s *Sovereign) deliverReport(unified *UnifiedReport) error {
 		if dest == "" {
 			continue
 		}
-		if err := writeReport(dest, filename, md, html); err != nil {
-			fmt.Printf("  sovereign: warning: failed to deliver report to %s: %v\n",
+		d, err := deliverer.New(dest, s.cfg.SaveToKey, s.cmd)
+		if err != nil {
+			fmt.Fprintf(s.out, "  sovereign: warning: invalid save-to destination %q: %v\n",
 				dest, err)
+			continue
+		}
+		if err := d.Deliver(s.ctx, filename, md, html); err != nil {
+			fmt.Fprintf(s.out, "  sovereign: warning: failed to deliver report to %s: %v\n",
+				d.String(), err)
 		} else {
-			fmt.Printf("  sovereign: report delivered to %s\n", dest)
+			fmt.Fprintf(s.out, "  sovereign: report delivered to %s\n", d.String())
 		}
 	}
 
-	return nil
-}
-
-// writeReport writes the markdown and HTML report files to a local
-// destination path. S3 and mailto delivery are deferred to a future
-// version that imports the lemmings target package directly.
-func writeReport(dest, filename, md, html string) error {
-	if err := os.MkdirAll(dest, 0755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dest, err)
-	}
-	mdPath := filepath.Join(dest, filename+".md")
-	if err := os.WriteFile(mdPath, []byte(md), 0644); err != nil {
-		return fmt.Errorf("write md: %w", err)
-	}
-	htmlPath := filepath.Join(dest, filename+".html")
-	if err := os.WriteFile(htmlPath, []byte(html), 0644); err != nil {
-		return fmt.Errorf("write html: %w", err)
-	}
-	fmt.Printf("    report (md):   %s\n", mdPath)
-	fmt.Printf("    report (html): %s\n", htmlPath)
 	return nil
 }
 
@@ -387,12 +374,6 @@ func domainFromURL(hit string) string {
 	hit = strings.Split(hit, "/")[0]
 	hit = strings.ReplaceAll(hit, ":", "-")
 	return hit
-}
-
-// formatBytesInt returns an int64 directly for accumulation purposes.
-// Human-readable formatting happens at render time.
-func formatBytesInt(b int64) string {
-	return fmt.Sprintf("%d", b)
 }
 
 // formatBytes renders a byte count as a human-readable string.

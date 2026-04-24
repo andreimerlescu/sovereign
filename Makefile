@@ -2,8 +2,7 @@ BINARY     := sovereign
 MODULE     := github.com/andreimerlescu/sovereign
 GO         := go
 GOFLAGS    := -race
-BENCHTIME  := 5s
-FUZZTIME   := 10s
+FUZZTIME   := 12s
 COVEROUT   := coverage.out
 
 .DEFAULT_GOAL := all
@@ -37,7 +36,7 @@ test-fuzz:
 
 .PHONY: test-bench
 test-bench:
-	$(GO) test -bench=. -benchmem -benchtime=$(BENCHTIME) -run='^$$' ./...
+	$(GO) test -bench=. -benchmem -run='^$$' ./...
 
 .PHONY: test-all
 test-all: test test-fuzz test-bench
@@ -150,14 +149,23 @@ test-pricing:
 
 .PHONY: test-exeggutor
 test-exeggutor:
-	$(GO) test $(GOFLAGS) ./pkg/terraform_exeggutor/...
+	$(GO) test $(GOFLAGS) ./pkg/terraform/exeggutor/...
 
 .PHONY: test-providers
 test-providers:
-	$(GO) test $(GOFLAGS) ./pkg/terraform_provider/...
+	$(GO) test $(GOFLAGS) ./pkg/terraform/provider/...
+
+.PHONY: test-commander
+test-commander:
+	$(GO) test $(GOFLAGS) ./pkg/commander/...
+
+.PHONY: test-deliverer
+test-deliverer:
+	$(GO) test $(GOFLAGS) ./pkg/deliverer/...
 
 .PHONY: test-packages
-test-packages: test-events test-ledger test-pricing test-exeggutor test-providers
+test-packages: test-events test-ledger test-pricing test-exeggutor test-providers test-commander test-deliverer
+
 
 # -- Help --------------------------------------------------------------------
 
@@ -174,10 +182,11 @@ help:
 	@echo "  Test"
 	@echo "    make test             unit tests with race detector (all packages)"
 	@echo "    make test-fuzz        fuzz all fuzz targets for FUZZTIME each"
-	@echo "    make test-bench       benchmark tests (all packages)"
+	@echo "    make test-bench       benchmark tests (1s per benchmark, Go default)"
 	@echo "    make test-all         unit + fuzz + bench"
 	@echo "    make test-cover       unit tests with HTML coverage report"
 	@echo "    make test-packages    test all pkg/* packages individually"
+	@echo "    make test-commander   test pkg/commander only"
 	@echo "    make test-events      test pkg/events only"
 	@echo "    make test-ledger      test pkg/ledger only"
 	@echo "    make test-pricing     test pkg/pricing only"
@@ -207,5 +216,4 @@ help:
 	@echo ""
 	@echo "  Overrides"
 	@echo "    FUZZTIME=30s make test-fuzz"
-	@echo "    BENCHTIME=10s make test-bench"
 	@echo ""

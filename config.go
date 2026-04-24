@@ -22,6 +22,8 @@ type SovereignConfigFile struct {
 	Ramp    string   `yaml:"Ramp"`
 	Plan    string   `yaml:"Plan"`
 	SaveTo  []string `yaml:"SaveTo"`
+	// SaveToKey is the SSH private key path for ssh:// save-to destinations.
+	SaveToKey string `yaml:"SaveToKey"`
 
 	// Infrastructure
 	Provider         string   `yaml:"Provider"`
@@ -93,12 +95,10 @@ func loadConfigFile(path string, cfg *SovereignConfig) error {
 // Exception: bool flags (Yes, DryRun) and numeric flags (Planets,
 // Terrain, Pack, RootVolumeSize, TempVolumeSize) use zero-value
 // checks directly since false/0 unambiguously means "not set via flag"
-// in this context. Duration fields compare against the compile-time
-// defaults because duration zero means "not set".
+// in this context. Duration fields compare against zero because zero
+// duration means "not set".
 func mergeConfigFile(file *SovereignConfigFile, cfg *SovereignConfig) error {
 	// String fields: only merge when cfg field is empty string.
-	// This means any flag-set value, including one that matches a
-	// default, is preserved.
 	if cfg.Hit == "" && file.Hit != "" {
 		cfg.Hit = file.Hit
 	}
@@ -131,6 +131,9 @@ func mergeConfigFile(file *SovereignConfigFile, cfg *SovereignConfig) error {
 	}
 	if cfg.TempVolumeType == "" && file.TempVolumeType != "" {
 		cfg.TempVolumeType = file.TempVolumeType
+	}
+	if cfg.SaveToKey == "" && file.SaveToKey != "" {
+		cfg.SaveToKey = file.SaveToKey
 	}
 
 	// Slice fields
@@ -333,5 +336,8 @@ TerminateTimeout: 5m
 SaveTo:
   - .
   - s3://my-bucket/sovereign-reports
+  - ssh://rocky@myserver.com:/reports
+
+SaveToKey: /home/rocky/.ssh/my-key.pem
 `
 }

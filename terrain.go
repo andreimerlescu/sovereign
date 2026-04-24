@@ -51,7 +51,7 @@ func (s *Sovereign) provisionTerrain() error {
 	wg.Wait()
 
 	for _, err := range errs {
-		fmt.Printf("  sovereign: warning: planet provisioning error: %v\n", err)
+		fmt.Fprintf(s.out, "  sovereign: warning: planet provisioning error: %v\n", err)
 	}
 
 	return nil
@@ -63,7 +63,7 @@ func (s *Sovereign) provisionTerrain() error {
 func (s *Sovereign) resumeOrProvision(planet *Planet) error {
 	// already completed in a previous run -- skip entirely
 	if s.ledger.PlanetCompleted(planet.ID) {
-		fmt.Printf("  sovereign: planet %d already completed -- skipping\n", planet.ID)
+		fmt.Fprintf(s.out, "  sovereign: planet %d already completed -- skipping\n", planet.ID)
 		planet.mu.Lock()
 		planet.Status = PlanetStatusDone
 		planet.mu.Unlock()
@@ -72,7 +72,7 @@ func (s *Sovereign) resumeOrProvision(planet *Planet) error {
 
 	// already provisioned -- hydrate from provider state and continue
 	if s.ledger.PlanetProvisioned(planet.ID) {
-		fmt.Printf("  sovereign: planet %d already provisioned -- resuming\n", planet.ID)
+		fmt.Fprintf(s.out, "  sovereign: planet %d already provisioned -- resuming\n", planet.ID)
 		return s.hydrateFromProviderState(planet)
 	}
 
@@ -89,7 +89,7 @@ func (s *Sovereign) resumeOrProvision(planet *Planet) error {
 			return s.hydratePlanetFromState(planet, state)
 
 		case tfprovider.LifecycleApplying, tfprovider.LifecycleInterrupted:
-			fmt.Printf("  sovereign: planet %d interrupted -- resuming apply\n", planet.ID)
+			fmt.Fprintf(s.out, "  sovereign: planet %d interrupted -- resuming apply\n", planet.ID)
 			s.bus.Emit(events.Event{
 				Kind:     events.KindRunInterrupted,
 				PlanetID: planet.ID,
@@ -99,7 +99,7 @@ func (s *Sovereign) resumeOrProvision(planet *Planet) error {
 			return s.applyAndHydrate(planet)
 
 		case tfprovider.LifecycleInitialized:
-			fmt.Printf("  sovereign: planet %d initialized -- running apply\n", planet.ID)
+			fmt.Fprintf(s.out, "  sovereign: planet %d initialized -- running apply\n", planet.ID)
 			return s.applyAndHydrate(planet)
 		}
 	}
@@ -115,7 +115,7 @@ func (s *Sovereign) provisionPlanet(planet *Planet) error {
 	planet.ProvisionedAt = time.Now()
 	planet.mu.Unlock()
 
-	fmt.Printf("  sovereign: provisioning planet %d in %s...\n",
+	fmt.Fprintf(s.out, "  sovereign: provisioning planet %d in %s...\n",
 		planet.ID, planet.Region)
 
 	s.bus.Emit(events.Event{
@@ -212,7 +212,7 @@ func (s *Sovereign) hydratePlanetFromOutput(planet *Planet, out *tfprovider.Prov
 		PublicIPv4: out.PublicIPv4,
 	})
 
-	fmt.Printf("  sovereign: planet %d provisioned -- %s (%s)\n",
+	fmt.Fprintf(s.out, "  sovereign: planet %d provisioned -- %s (%s)\n",
 		planet.ID, out.PublicIPv4, planet.Region)
 
 	return nil
@@ -227,7 +227,7 @@ func (s *Sovereign) hydratePlanetFromState(planet *Planet, state *tfprovider.Pro
 	planet.Status = PlanetStatusRunning
 	planet.mu.Unlock()
 
-	fmt.Printf("  sovereign: planet %d resumed -- %s (%s)\n",
+	fmt.Fprintf(s.out, "  sovereign: planet %d resumed -- %s (%s)\n",
 		planet.ID, state.PublicIPv4, planet.Region)
 
 	return nil
@@ -284,7 +284,7 @@ func (s *Sovereign) destroyTerrain() error {
 
 // destroyPlanet runs terraform destroy for a single planet.
 func (s *Sovereign) destroyPlanet(planet *Planet) error {
-	fmt.Printf("  sovereign: destroying planet %d (%s)...\n",
+	fmt.Fprintf(s.out, "  sovereign: destroying planet %d (%s)...\n",
 		planet.ID, planet.InstanceID)
 
 	s.bus.Emit(events.Event{
@@ -320,7 +320,7 @@ func (s *Sovereign) destroyPlanet(planet *Planet) error {
 		InstanceID: planet.InstanceID,
 	})
 
-	fmt.Printf("  sovereign: planet %d destroyed\n", planet.ID)
+	fmt.Fprintf(s.out, "  sovereign: planet %d destroyed\n", planet.ID)
 	return nil
 }
 
@@ -384,7 +384,7 @@ func (s *Sovereign) saveProviderState(planet *Planet, status tfprovider.Lifecycl
 
 	spec := s.planetSpec(planet)
 	if err := s.provider.SaveState(spec, state); err != nil {
-		fmt.Printf("  sovereign: warning: failed to save provider state for planet %d: %v\n",
+		fmt.Fprintf(s.out, "  sovereign: warning: failed to save provider state for planet %d: %v\n",
 			planet.ID, err)
 	}
 }

@@ -28,6 +28,7 @@ Regions:
 InstanceType: t3.large
 SaveTo:
   - /tmp/reports
+SaveToKey: /home/rocky/.ssh/key.pem
 ProvisionTimeout: 10m
 TerminateTimeout: 10m
 Yes: true
@@ -70,6 +71,8 @@ TempVolumeType: gp2
 	requireEqual(t, cfg.RootVolumeType, "gp2", "RootVolumeType from config file")
 	requireEqual(t, cfg.TempVolumeSize, 10, "TempVolumeSize from config file")
 	requireEqual(t, cfg.TempVolumeType, "gp2", "TempVolumeType from config file")
+	requireEqual(t, cfg.SaveToKey, "/home/rocky/.ssh/key.pem",
+		"SaveToKey from config file")
 }
 
 func TestLoadConfigFile_EmptyPath(t *testing.T) {
@@ -117,6 +120,7 @@ func TestLoadConfigFile_FlagsOverrideConfigFile(t *testing.T) {
 Hit: https://from-config-file.com
 Planets: 99
 RemoteUser: ubuntu
+SaveToKey: /from/config/key.pem
 `
 	err := os.WriteFile(path, []byte(contents), 0644)
 	requireNoError(t, err, "write config file")
@@ -125,6 +129,7 @@ RemoteUser: ubuntu
 	cfg.Hit = "https://from-flag.com"
 	cfg.Planets = 3
 	cfg.RemoteUser = "rocky"
+	cfg.SaveToKey = "/from/flag/key.pem"
 
 	err = loadConfigFile(path, &cfg)
 	requireNoError(t, err, "loadConfigFile flags override")
@@ -135,6 +140,8 @@ RemoteUser: ubuntu
 		"Planets flag value must not be overwritten by config file")
 	requireEqual(t, cfg.RemoteUser, "rocky",
 		"RemoteUser flag value must not be overwritten by config file")
+	requireEqual(t, cfg.SaveToKey, "/from/flag/key.pem",
+		"SaveToKey flag value must not be overwritten by config file")
 }
 
 // -- mergeConfigFile ---------------------------------------------------------
@@ -151,6 +158,7 @@ func TestMergeConfigFile_AllDefaults(t *testing.T) {
 		Regions:          []string{"eu-west-1"},
 		InstanceType:     "c6a.large",
 		SaveTo:           []string{"/tmp/merged"},
+		SaveToKey:        "/home/rocky/.ssh/merged.pem",
 		ProvisionTimeout: "8m",
 		TerminateTimeout: "8m",
 		Yes:              true,
@@ -181,6 +189,7 @@ func TestMergeConfigFile_AllDefaults(t *testing.T) {
 	requireEqual(t, cfg.InstanceType, "c6a.large", "merged InstanceType")
 	requireEqual(t, len(cfg.Regions), 1, "merged Regions count")
 	requireEqual(t, cfg.Regions[0], "eu-west-1", "merged Region value")
+	requireEqual(t, cfg.SaveToKey, "/home/rocky/.ssh/merged.pem", "merged SaveToKey")
 	requireEqual(t, cfg.Yes, true, "merged Yes")
 	requireEqual(t, cfg.DryRun, true, "merged DryRun")
 	requireEqual(t, cfg.ProvisionTimeout, 8*time.Minute, "merged ProvisionTimeout")
@@ -204,6 +213,7 @@ func TestMergeConfigFile_DoesNotOverrideNonDefaults(t *testing.T) {
 		RemoteUser:     "ubuntu",
 		RootVolumeSize: 999,
 		RootVolumeType: "io2",
+		SaveToKey:      "/from/file/key.pem",
 	}
 
 	cfg := SovereignConfig{
@@ -217,6 +227,7 @@ func TestMergeConfigFile_DoesNotOverrideNonDefaults(t *testing.T) {
 		RemoteUser:     "rocky",
 		RootVolumeSize: 30,
 		RootVolumeType: "gp2",
+		SaveToKey:      "/from/flag/key.pem",
 	}
 
 	err := mergeConfigFile(file, &cfg)
@@ -227,6 +238,34 @@ func TestMergeConfigFile_DoesNotOverrideNonDefaults(t *testing.T) {
 	requireEqual(t, cfg.RemoteUser, "rocky", "RemoteUser must not be overridden")
 	requireEqual(t, cfg.RootVolumeSize, 30, "RootVolumeSize must not be overridden")
 	requireEqual(t, cfg.RootVolumeType, "gp2", "RootVolumeType must not be overridden")
+	requireEqual(t, cfg.SaveToKey, "/from/flag/key.pem",
+		"SaveToKey must not be overridden by config file")
+}
+
+func TestMergeConfigFile_SaveToKeyMergedWhenEmpty(t *testing.T) {
+	file := &SovereignConfigFile{
+		SaveToKey: "/from/file/key.pem",
+	}
+	cfg := SovereignConfig{}
+
+	err := mergeConfigFile(file, &cfg)
+	requireNoError(t, err, "mergeConfigFile SaveToKey merged")
+	requireEqual(t, cfg.SaveToKey, "/from/file/key.pem",
+		"SaveToKey merged from config file when cfg is empty")
+}
+
+func TestMergeConfigFile_SaveToKeyNotMergedWhenSet(t *testing.T) {
+	file := &SovereignConfigFile{
+		SaveToKey: "/from/file/key.pem",
+	}
+	cfg := SovereignConfig{
+		SaveToKey: "/from/flag/key.pem",
+	}
+
+	err := mergeConfigFile(file, &cfg)
+	requireNoError(t, err, "mergeConfigFile SaveToKey not merged when set")
+	requireEqual(t, cfg.SaveToKey, "/from/flag/key.pem",
+		"SaveToKey flag value preserved when config file also has value")
 }
 
 func TestMergeConfigFile_InvalidUntilDuration(t *testing.T) {
@@ -276,6 +315,32 @@ func TestMergeConfigFile_SaveToMerged(t *testing.T) {
 	requireEqual(t, len(cfg.SaveTo), 2, "SaveTo count after merge")
 	requireEqual(t, cfg.SaveTo[0], "/tmp/reports", "first SaveTo after merge")
 	requireEqual(t, cfg.SaveTo[1], "s3://my-bucket", "second SaveTo after merge")
+}
+
+func TestMergeConfigFile_SaveToWithSSHScheme(t *testing.T) {
+	file := &SovereignConfigFile{
+		SaveTo:    []string{"ssh://rocky@myserver.com:/reports"},
+		SaveToKey: "/home/rocky/.ssh/key.pem",
+	}
+	cfg := SovereignConfig{}
+	err := mergeConfigFile(file, &cfg)
+	requireNoError(t, err, "mergeConfigFile SaveTo ssh scheme")
+	requireEqual(t, len(cfg.SaveTo), 1, "SaveTo count after merge")
+	requireEqual(t, cfg.SaveTo[0], "ssh://rocky@myserver.com:/reports",
+		"ssh SaveTo preserved")
+	requireEqual(t, cfg.SaveToKey, "/home/rocky/.ssh/key.pem",
+		"SaveToKey merged alongside ssh SaveTo")
+}
+
+func TestMergeConfigFile_SaveToWithS3Scheme(t *testing.T) {
+	file := &SovereignConfigFile{
+		SaveTo: []string{"s3://my-bucket/reports/2026"},
+	}
+	cfg := SovereignConfig{}
+	err := mergeConfigFile(file, &cfg)
+	requireNoError(t, err, "mergeConfigFile SaveTo s3 scheme")
+	requireEqual(t, cfg.SaveTo[0], "s3://my-bucket/reports/2026",
+		"s3 SaveTo preserved")
 }
 
 // -- validateConfig ----------------------------------------------------------
@@ -480,6 +545,24 @@ func TestExampleConfigFile_IsValidYAML(t *testing.T) {
 	requireNoError(t, err, "exampleConfigFile parses as valid YAML")
 }
 
+func TestExampleConfigFile_ContainsSaveToKey(t *testing.T) {
+	got := exampleConfigFile()
+	requireTrue(t, strings.Contains(got, "SaveToKey"),
+		"exampleConfigFile contains SaveToKey field")
+}
+
+func TestExampleConfigFile_ContainsSSHDestination(t *testing.T) {
+	got := exampleConfigFile()
+	requireTrue(t, strings.Contains(got, "ssh://"),
+		"exampleConfigFile contains ssh:// save-to example")
+}
+
+func TestExampleConfigFile_ContainsS3Destination(t *testing.T) {
+	got := exampleConfigFile()
+	requireTrue(t, strings.Contains(got, "s3://"),
+		"exampleConfigFile contains s3:// save-to example")
+}
+
 // -- Benchmarks --------------------------------------------------------------
 
 func BenchmarkValidateConfig(b *testing.B) {
@@ -510,6 +593,7 @@ func BenchmarkMergeConfigFile(b *testing.B) {
 		RootVolumeType:   "gp3",
 		TempVolumeSize:   20,
 		TempVolumeType:   "gp3",
+		SaveToKey:        "/home/rocky/.ssh/key.pem",
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -549,9 +633,6 @@ func FuzzDomainFromURL(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, url string) {
 		got := domainFromURL(url)
-		// Replicate the scheme-stripping domainFromURL does to determine
-		// whether a host component exists in the input. If no host
-		// component exists, an empty result is correct.
 		stripped := strings.TrimPrefix(url, "https://")
 		stripped = strings.TrimPrefix(stripped, "http://")
 		host := strings.Split(stripped, "/")[0]

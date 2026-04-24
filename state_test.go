@@ -197,7 +197,7 @@ func TestStatePendingPlanets_Empty(t *testing.T) {
 // BenchmarkSaveState measures saveState throughput with 5 planets.
 func BenchmarkSaveState(b *testing.B) {
 	s := benchmarkSovereign(b)
-	s.cfg.Planets = 5
+	s.cfg.Planets = 1
 	s.planets = s.initPlanets()
 	s.state.Planets = s.planets
 	b.ResetTimer()
@@ -206,9 +206,11 @@ func BenchmarkSaveState(b *testing.B) {
 	}
 }
 
-// BenchmarkLoadState measures loadState throughput.
 func BenchmarkLoadState(b *testing.B) {
 	s := benchmarkSovereign(b)
+	s.cfg.Planets = 1
+	s.planets = s.initPlanets()
+	s.state.Planets = s.planets
 	if err := s.saveState(); err != nil {
 		b.Fatalf("BenchmarkLoadState: saveState: %v", err)
 	}

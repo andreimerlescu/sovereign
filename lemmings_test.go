@@ -155,8 +155,12 @@ func TestPlanetSSHKeyPath_ContainsPem(t *testing.T) {
 // BenchmarkBuildLemmingsCommand measures command string construction.
 func BenchmarkBuildLemmingsCommand(b *testing.B) {
 	s := benchmarkSovereign(b)
-	planet := testProvisionedPlanet(1)
-	planet.RemoteUser = "rocky"
+	planet := &Planet{
+		ID:           1,
+		Region:       testRegion,
+		InstanceType: testInstanceType,
+		RemoteUser:   "rocky",
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		s.buildLemmingsCommand(planet)

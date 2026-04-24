@@ -3,14 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/andreimerlescu/sovereign/pkg/commander"
 	"github.com/andreimerlescu/sovereign/pkg/events"
 	"github.com/andreimerlescu/sovereign/pkg/ledger"
 )
@@ -33,117 +34,6 @@ const (
 	// testZone is the default AWS availability zone used in tests.
 	testZone = "us-east-1a"
 )
-
-// -- Commander interface ------------------------------------------------------
-
-// Commander wraps exec.CommandContext so tests can inject a fake
-// implementation that returns controlled output without spawning
-// real processes. Production code uses RealCommander. Tests use
-// MockCommander.
-type Commander interface {
-	Run(ctx context.Context, name string, args ...string) (stdout, stderr string, err error)
-}
-
-// RealCommander executes real OS commands via os/exec.
-type RealCommander struct{}
-
-// Run executes the named command and returns its combined output.
-func (r *RealCommander) Run(ctx context.Context, name string, args ...string) (string, string, error) {
-	return "", "", fmt.Errorf("RealCommander.Run: not implemented in test context")
-}
-
-// MockCommander is a test double for Commander that returns
-// pre-configured responses without executing real processes.
-type MockCommander struct {
-	mu       sync.Mutex
-	calls    []MockCall
-	handlers map[string]MockHandler
-}
-
-// MockCall records a single command invocation for later assertion.
-type MockCall struct {
-	Name string
-	Args []string
-}
-
-// MockHandler defines the response for a registered command.
-type MockHandler struct {
-	Stdout string
-	Stderr string
-	Err    error
-}
-
-// NewMockCommander constructs a MockCommander with no registered handlers.
-func NewMockCommander() *MockCommander {
-	return &MockCommander{
-		handlers: make(map[string]MockHandler),
-	}
-}
-
-// Register sets the response for a command identified by its name.
-func (m *MockCommander) Register(name string, handler MockHandler) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.handlers[name] = handler
-}
-
-// Run records the call and returns the registered handler response.
-func (m *MockCommander) Run(ctx context.Context, name string, args ...string) (string, string, error) {
-	m.mu.Lock()
-	m.calls = append(m.calls, MockCall{Name: name, Args: args})
-	handler, ok := m.handlers[name]
-	m.mu.Unlock()
-	if !ok {
-		return "ok", "", nil
-	}
-	return handler.Stdout, handler.Stderr, handler.Err
-}
-
-// Called returns true if the named command was invoked at least once.
-func (m *MockCommander) Called(name string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, c := range m.calls {
-		if c.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-// CallCount returns the number of times the named command was invoked.
-func (m *MockCommander) CallCount(name string) int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	count := 0
-	for _, c := range m.calls {
-		if c.Name == name {
-			count++
-		}
-	}
-	return count
-}
-
-// Calls returns all recorded invocations of the named command.
-func (m *MockCommander) Calls(name string) []MockCall {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var result []MockCall
-	for _, c := range m.calls {
-		if c.Name == name {
-			result = append(result, c)
-		}
-	}
-	return result
-}
-
-// Reset clears all recorded calls and registered handlers.
-func (m *MockCommander) Reset() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.calls = nil
-	m.handlers = make(map[string]MockHandler)
-}
 
 // -- Test config helpers ------------------------------------------------------
 
@@ -240,8 +130,9 @@ func testLostPlanet(id int) *Planet {
 // -- Sovereign helpers --------------------------------------------------------
 
 // testSovereign constructs a Sovereign with a test config, a temp
-// directory for state, an initialized event bus, and a ledger wired
-// as a bus subscriber.
+// directory for state, an initialized event bus, a ledger wired as
+// a bus subscriber, and a MockCommander injected for all subprocess
+// calls.
 func testSovereign(t *testing.T) *Sovereign {
 	t.Helper()
 	cfg := testConfig()
@@ -268,6 +159,8 @@ func testSovereign(t *testing.T) *Sovereign {
 		stateFile: stateFile,
 		bus:       bus,
 		ledger:    l,
+		cmd:       commander.NewMockCommander(),
+		out:       io.Discard,
 	}
 	s.planets = s.initPlanets()
 	s.state = &SovereignState{
@@ -305,11 +198,6 @@ func setTestEnv(t *testing.T) {
 
 // newMockPricingJSONServer starts an httptest.Server that returns a
 // fixed pricing JSON response for any instance type and region.
-// Used by cost_test.go to test estimateCost against a real HTTP server
-// without hitting instances.vantage.sh.
-//
-// The response format matches what VantagePricer expects from the API.
-// instance_type and region are reflected from the query parameters.
 func newMockPricingJSONServer(tb testing.TB, hourlyRateDollars float64) *httptest.Server {
 	tb.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -465,9 +353,12 @@ func requireFalse(t *testing.T, condition bool, msg string) {
 // -- Benchmark helpers --------------------------------------------------------
 
 // benchmarkSovereign constructs a Sovereign suitable for benchmark use.
+// out is set to io.Discard to suppress the per-iteration stdout noise
+// that would otherwise flood benchmark output.
 func benchmarkSovereign(b *testing.B) *Sovereign {
 	b.Helper()
 	cfg := testConfig()
+	cfg.Planets = 1 // benchmarks use 1 planet unless explicitly overridden
 	ctx, cancel := context.WithCancel(context.Background())
 	b.Cleanup(cancel)
 
@@ -491,6 +382,8 @@ func benchmarkSovereign(b *testing.B) *Sovereign {
 		stateFile: stateFile,
 		bus:       bus,
 		ledger:    l,
+		cmd:       commander.NewMockCommander(),
+		out:       io.Discard,
 	}
 	s.planets = s.initPlanets()
 	s.state = &SovereignState{

@@ -6,3 +6,5 @@ bin/*
 .DS_Store
 .sovereignd/
 testdata/
+sovereign.*.md
+sovereign.*.html

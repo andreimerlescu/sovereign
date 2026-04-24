@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/andreimerlescu/sovereign/pkg/deliverer"
 )
 
 // -- percentile --------------------------------------------------------------
@@ -202,61 +205,70 @@ func TestReadPlanetReport_EmptyReportPath(t *testing.T) {
 func TestReadPlanetReport_NoReportFile(t *testing.T) {
 	s := testSovereign(t)
 	planet := testDonePlanet(t, 1)
-	// ReportPath exists but contains no lemmings yml file
 
 	_, err := s.readPlanetReport(planet)
 	requireError(t, err, "readPlanetReport no report file")
 }
 
-// -- writeReport -------------------------------------------------------------
+// -- LocalDeliverer ----------------------------------------------------------
 
-// TestWriteReport_WritesMarkdownAndHTML verifies that writeReport
+// TestLocalDeliverer_WritesMarkdownAndHTML verifies that Deliver
 // creates both .md and .html files in the destination directory.
-func TestWriteReport_WritesMarkdownAndHTML(t *testing.T) {
+func TestLocalDeliverer_WritesMarkdownAndHTML(t *testing.T) {
 	dest := t.TempDir()
-	err := writeReport(dest, "sovereign.2026.04.22.example.com",
+	d, err := deliverer.New(dest, "", nil)
+	requireNoError(t, err, "New local deliverer")
+
+	err = d.Deliver(context.Background(),
+		"sovereign.2026.04.22.example.com",
 		"# test markdown", "<html>test</html>")
-	requireNoError(t, err, "writeReport writes files")
+	requireNoError(t, err, "Deliver writes files")
 
 	mdPath := filepath.Join(dest, "sovereign.2026.04.22.example.com.md")
 	htmlPath := filepath.Join(dest, "sovereign.2026.04.22.example.com.html")
 
 	if _, statErr := os.Stat(mdPath); statErr != nil {
-		t.Fatalf("writeReport: markdown file not created at %s", mdPath)
+		t.Fatalf("Deliver: markdown file not created at %s", mdPath)
 	}
 	if _, statErr := os.Stat(htmlPath); statErr != nil {
-		t.Fatalf("writeReport: html file not created at %s", htmlPath)
+		t.Fatalf("Deliver: html file not created at %s", htmlPath)
 	}
 }
 
-// TestWriteReport_ContentPreserved verifies that the file contents
-// match what was passed to writeReport.
-func TestWriteReport_ContentPreserved(t *testing.T) {
+// TestLocalDeliverer_ContentPreserved verifies that the file contents
+// match what was passed to Deliver.
+func TestLocalDeliverer_ContentPreserved(t *testing.T) {
 	dest := t.TempDir()
+	d, err := deliverer.New(dest, "", nil)
+	requireNoError(t, err, "New local deliverer")
+
 	md := "# sovereign report\n\ntest content"
 	html := "<!DOCTYPE html><html><body>test</body></html>"
 
-	err := writeReport(dest, "test-report", md, html)
-	requireNoError(t, err, "writeReport content preserved")
+	err = d.Deliver(context.Background(), "test-report", md, html)
+	requireNoError(t, err, "Deliver content preserved")
 
 	mdData, readErr := os.ReadFile(filepath.Join(dest, "test-report.md"))
-	requireNoError(t, readErr, "writeReport read md")
-	requireEqual(t, string(mdData), md, "writeReport md content matches")
+	requireNoError(t, readErr, "read md")
+	requireEqual(t, string(mdData), md, "md content matches")
 
 	htmlData, readErr := os.ReadFile(filepath.Join(dest, "test-report.html"))
-	requireNoError(t, readErr, "writeReport read html")
-	requireEqual(t, string(htmlData), html, "writeReport html content matches")
+	requireNoError(t, readErr, "read html")
+	requireEqual(t, string(htmlData), html, "html content matches")
 }
 
-// TestWriteReport_CreatesDestDirectory verifies that writeReport
+// TestLocalDeliverer_CreatesDestDirectory verifies that Deliver
 // creates the destination directory if it does not exist.
-func TestWriteReport_CreatesDestDirectory(t *testing.T) {
+func TestLocalDeliverer_CreatesDestDirectory(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "nested", "report", "dir")
-	err := writeReport(dest, "test-report", "# md", "<html/>")
-	requireNoError(t, err, "writeReport creates dest directory")
+	d, err := deliverer.New(dest, "", nil)
+	requireNoError(t, err, "New local deliverer")
+
+	err = d.Deliver(context.Background(), "test-report", "# md", "<html/>")
+	requireNoError(t, err, "Deliver creates dest directory")
 
 	if _, statErr := os.Stat(dest); statErr != nil {
-		t.Fatalf("writeReport: dest directory not created at %s", dest)
+		t.Fatalf("Deliver: dest directory not created at %s", dest)
 	}
 }
 
@@ -330,5 +342,53 @@ func testUnifiedReport(t *testing.T) *UnifiedReport {
 		P99:          400 * time.Millisecond,
 		Planets:      []*PlanetReport{pr},
 		LostPlanets:  []*Planet{},
+	}
+}
+
+// TestAggregateReport_BytesAccumulatesNumerically verifies that bytes
+// across multiple paths accumulate as integers not strings. This is a
+// regression test for the GlobalPathReport.Bytes string-concatenation bug.
+func TestAggregateReport_BytesAccumulatesNumerically(t *testing.T) {
+	s := testSovereign(t)
+
+	planet1 := testDonePlanet(t, 1)
+	planet2 := testDonePlanet(t, 2)
+	writeMockLemmingsReport(t, planet1.ReportPath, 1)
+	writeMockLemmingsReport(t, planet2.ReportPath, 2)
+
+	s.planets = []*Planet{planet1, planet2}
+	s.state.Planets = s.planets
+
+	_ = s.aggregateReport()
+
+	report1, err := s.readPlanetReport(planet1)
+	requireNoError(t, err, "readPlanetReport planet1")
+
+	report2, err := s.readPlanetReport(planet2)
+	requireNoError(t, err, "readPlanetReport planet2")
+
+	pathMap := make(map[string]*GlobalPathReport)
+	for _, path := range report1.Paths {
+		gp := &GlobalPathReport{URL: path.URL}
+		gp.Bytes += path.Bytes
+		pathMap[path.URL] = gp
+	}
+	for _, path := range report2.Paths {
+		gp, ok := pathMap[path.URL]
+		if !ok {
+			gp = &GlobalPathReport{URL: path.URL}
+			pathMap[path.URL] = gp
+		}
+		gp.Bytes += path.Bytes
+	}
+
+	for url, gp := range pathMap {
+		if gp.Bytes <= 0 {
+			t.Errorf("path %s: Bytes = %d, want > 0", url, gp.Bytes)
+		}
+		if gp.Bytes > 10_000_000 {
+			t.Errorf("path %s: Bytes = %d looks like string concatenation, not integer addition",
+				url, gp.Bytes)
+		}
 	}
 }

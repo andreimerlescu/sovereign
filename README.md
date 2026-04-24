@@ -24,8 +24,8 @@ performs under load from every origin simultaneously -- multiple
 regions, multiple cloud providers, hundreds of thousands of lemmings
 running concurrently across the globe -- with a single command.
 
-Sovereign provisions cloud infrastructure directly via Terraform. It 
-installs lemmings on each planet, runs the load test, collects results, 
+Sovereign provisions cloud infrastructure directly via Terraform. It
+installs lemmings on each planet, runs the load test, collects results,
 and destroys the infrastructure when done.
 
 ---
@@ -235,7 +235,8 @@ Run with a plan file across three planets:
     --until, -u            How long each lemming lives
     --ramp, -r             Duration to bring all terrains online per planet
     --plan, -pl            Path to a lemmings plan YAML file
-    --save-to, -s          Report delivery destinations
+    --save-to, -s          Report delivery destinations (repeatable)
+    --save-to-key, -sk     SSH private key path for ssh:// save-to destinations
 
 ### Infrastructure
 
@@ -271,6 +272,64 @@ Run with a plan file across three planets:
 ### Config File
 
     --config, -c           Path to a sovereign YAML config file
+
+---
+
+## Report Delivery
+
+Sovereign delivers the unified report as both markdown and HTML to
+every destination listed in --save-to. Multiple destinations are
+supported simultaneously. Each destination is parsed by its URL
+scheme.
+
+### Local filesystem
+
+    --save-to .
+    --save-to /tmp/reports
+    --save-to file:///tmp/reports
+
+Writes sovereign.<date>.<domain>.md and .html into the directory.
+The directory is created if it does not exist.
+
+### Amazon S3
+
+    --save-to s3://my-bucket/reports/2026
+
+Uploads via aws s3 cp with appropriate Content-Type headers.
+Sovereign never manages AWS S3 credentials -- the aws CLI reads them
+from the subprocess environment, ~/.aws/credentials, or instance
+metadata as it normally would.
+
+Uploads to:
+
+    s3://my-bucket/reports/2026/sovereign.<date>.<domain>.md
+    s3://my-bucket/reports/2026/sovereign.<date>.<domain>.html
+
+### Remote host via SCP
+
+    --save-to ssh://rocky@myserver.com:/reports
+    --save-to-key /home/rocky/.ssh/my-key.pem
+
+Uploads via scp. The --save-to-key flag provides the SSH private key.
+If --save-to-key is omitted the SSH agent or default key discovery
+is used. StrictHostKeyChecking is disabled.
+
+Uploads to:
+
+    rocky@myserver.com:/reports/sovereign.<date>.<domain>.md
+    rocky@myserver.com:/reports/sovereign.<date>.<domain>.html
+
+### Multiple destinations
+
+    sovereign \
+        --save-to . \
+        --save-to s3://my-bucket/reports \
+        --save-to ssh://rocky@myserver.com:/reports \
+        --save-to-key ~/.ssh/my-key.pem
+
+All destinations receive the report. A delivery failure to one
+destination is logged as a warning and does not block delivery
+to the others.
 
 ---
 
@@ -325,6 +384,9 @@ Example sovereign.yml:
     SaveTo:
       - .
       - s3://my-bucket/sovereign-reports
+      - ssh://rocky@myserver.com:/reports
+
+    SaveToKey: /home/rocky/.ssh/my-key.pem
 
 ---
 
@@ -366,6 +428,7 @@ Runtime dependencies that must be present in PATH:
     terraform    infrastructure provisioning
     ssh          lemmings execution on remote planets
     scp          plan file delivery and result collection
+    aws          S3 report delivery (only required when using s3:// save-to)
 
 Lemmings is installed on each planet at provisioning time via:
 
@@ -394,6 +457,8 @@ is required. A pricing failure for a planet is non-fatal.
     make clean-state     remove .sovereignd state directory
     make show-state      print current sovereign state file
     make show-ledger     print most recent run ledger
+    make test-packages   test all pkg/* packages individually
+    make test-deliverer  test pkg/deliverer only
 
 ---
 

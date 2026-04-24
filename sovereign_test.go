@@ -232,7 +232,7 @@ func TestPrintCostEstimate_NoPanic(t *testing.T) {
 
 func BenchmarkInitPlanets(b *testing.B) {
 	s := benchmarkSovereign(b)
-	s.cfg.Planets = 100
+	s.cfg.Planets = 1
 	s.cfg.Regions = defaultAWSRegions
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

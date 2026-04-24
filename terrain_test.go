@@ -539,11 +539,10 @@ func BenchmarkProvisionPlanet(b *testing.B) {
 	mock := newMockProvider()
 	s := benchmarkSovereign(b)
 	s.provider = mock
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		planet := &Planet{
-			ID:           i + 1,
+			ID:           1,
 			Region:       testRegion,
 			InstanceType: testInstanceType,
 			Status:       PlanetStatusPending,
@@ -557,39 +556,17 @@ func BenchmarkDestroyPlanet(b *testing.B) {
 	mock := newMockProvider()
 	s := benchmarkSovereign(b)
 	s.provider = mock
-
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		planet := &Planet{
-			ID:         i + 1,
+			ID:         1,
 			Region:     testRegion,
-			InstanceID: fmt.Sprintf("i-%017d", i),
+			InstanceID: "i-00000000000000001",
 			Status:     PlanetStatusRunning,
 			RemoteUser: "rocky",
 		}
 		s.destroyPlanet(planet)
 	}
-}
-
-// -- helpers -----------------------------------------------------------------
-
-func writeTerraformDir(t *testing.T, workDir string) {
-	t.Helper()
-	tfDir := filepath.Join(workDir, "terraform")
-	if err := os.MkdirAll(tfDir, 0700); err != nil {
-		t.Fatalf("writeTerraformDir: %v", err)
-	}
-	stateFile := filepath.Join(tfDir, "terraform.tfstate")
-	if err := os.WriteFile(stateFile, []byte(`{"version":4}`), 0600); err != nil {
-		t.Fatalf("writeTerraformDir: write state: %v", err)
-	}
-}
-
-func testProvisionedPlanetWithWorkDir(t *testing.T, s *Sovereign, id int) *Planet {
-	t.Helper()
-	planet := testProvisionedPlanet(id)
-	writeTerraformDir(t, s.planetWorkDir(planet))
-	return planet
 }
 
 func BenchmarkHCLSpec(b *testing.B) {
@@ -616,6 +593,27 @@ func BenchmarkPlanetSpec(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		s.planetSpec(planet)
 	}
+}
+
+// -- helpers -----------------------------------------------------------------
+
+func writeTerraformDir(t *testing.T, workDir string) {
+	t.Helper()
+	tfDir := filepath.Join(workDir, "terraform")
+	if err := os.MkdirAll(tfDir, 0700); err != nil {
+		t.Fatalf("writeTerraformDir: %v", err)
+	}
+	stateFile := filepath.Join(tfDir, "terraform.tfstate")
+	if err := os.WriteFile(stateFile, []byte(`{"version":4}`), 0600); err != nil {
+		t.Fatalf("writeTerraformDir: write state: %v", err)
+	}
+}
+
+func testProvisionedPlanetWithWorkDir(t *testing.T, s *Sovereign, id int) *Planet {
+	t.Helper()
+	planet := testProvisionedPlanet(id)
+	writeTerraformDir(t, s.planetWorkDir(planet))
+	return planet
 }
 
 func timestampForTest() time.Time {

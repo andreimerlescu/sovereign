@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"time"
@@ -22,7 +21,7 @@ func (s *Sovereign) runLemmings() error {
 	for _, planet := range s.planets {
 		planet := planet
 		if planet.Status == PlanetStatusLost {
-			fmt.Printf("  sovereign: skipping planet %d -- lost during provisioning\n",
+			fmt.Fprintf(s.out, "  sovereign: skipping planet %d -- lost during provisioning\n",
 				planet.ID)
 			continue
 		}
@@ -39,16 +38,16 @@ func (s *Sovereign) runLemmings() error {
 	wg.Wait()
 
 	for _, err := range errs {
-		fmt.Printf("  sovereign: warning: lemmings run error: %v\n", err)
+		fmt.Fprintf(s.out, "  sovereign: warning: lemmings run error: %v\n", err)
 	}
 
 	return nil
 }
 
 // runLemmingsOnPlanet copies the plan file if configured and executes
-// lemmings on the remote instance via SSH.
+// lemmings on the remote instance via SSH through Commander.
 func (s *Sovereign) runLemmingsOnPlanet(planet *Planet) error {
-	fmt.Printf("  sovereign: starting lemmings on planet %d (%s)...\n",
+	fmt.Fprintf(s.out, "  sovereign: starting lemmings on planet %d (%s)...\n",
 		planet.ID, planet.PublicIPv4)
 
 	s.bus.Emit(events.Event{
@@ -59,7 +58,6 @@ func (s *Sovereign) runLemmingsOnPlanet(planet *Planet) error {
 		PublicIPv4: planet.PublicIPv4,
 	})
 
-	// copy plan file if configured
 	if s.cfg.Plan != "" {
 		if err := s.copyPlanFile(planet); err != nil {
 			planet.mu.Lock()
@@ -77,12 +75,11 @@ func (s *Sovereign) runLemmingsOnPlanet(planet *Planet) error {
 		}
 	}
 
-	// build the run deadline
 	deadline := s.cfg.Ramp + s.cfg.Until + 5*time.Minute
 	ctx, cancel := context.WithTimeout(s.ctx, deadline)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx,
+	_, _, err := s.cmd.Run(ctx, "", nil,
 		"ssh",
 		"-i", s.planetSSHKeyPath(planet),
 		"-o", "StrictHostKeyChecking=no",
@@ -90,10 +87,7 @@ func (s *Sovereign) runLemmingsOnPlanet(planet *Planet) error {
 		fmt.Sprintf("%s@%s", planet.RemoteUser, planet.PublicIPv4),
 		s.buildLemmingsCommand(planet),
 	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		planet.mu.Lock()
 		planet.Status = PlanetStatusLost
 		planet.Error = err
@@ -116,12 +110,12 @@ func (s *Sovereign) runLemmingsOnPlanet(planet *Planet) error {
 		PublicIPv4: planet.PublicIPv4,
 	})
 
-	fmt.Printf("  sovereign: planet %d lemmings run complete\n", planet.ID)
+	fmt.Fprintf(s.out, "  sovereign: planet %d lemmings run complete\n", planet.ID)
 	return nil
 }
 
 // collectResults collects lemmings report files from each planet
-// via SCP concurrently.
+// via SCP concurrently through Commander.
 func (s *Sovereign) collectResults() error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -130,7 +124,7 @@ func (s *Sovereign) collectResults() error {
 	for _, planet := range s.planets {
 		planet := planet
 		if planet.Status == PlanetStatusLost {
-			fmt.Printf("  sovereign: skipping collection for planet %d -- lost\n",
+			fmt.Fprintf(s.out, "  sovereign: skipping collection for planet %d -- lost\n",
 				planet.ID)
 			continue
 		}
@@ -147,20 +141,20 @@ func (s *Sovereign) collectResults() error {
 	wg.Wait()
 
 	for _, err := range errs {
-		fmt.Printf("  sovereign: warning: collection error: %v\n", err)
+		fmt.Fprintf(s.out, "  sovereign: warning: collection error: %v\n", err)
 	}
 
 	return nil
 }
 
 // collectFromPlanet SCPs the lemmings report files from a planet
-// back to the sovereign working directory.
+// back to the sovereign working directory via Commander.
 func (s *Sovereign) collectFromPlanet(planet *Planet) error {
 	planet.mu.Lock()
 	planet.Status = PlanetStatusCollecting
 	planet.mu.Unlock()
 
-	fmt.Printf("  sovereign: collecting results from planet %d (%s)...\n",
+	fmt.Fprintf(s.out, "  sovereign: collecting results from planet %d (%s)...\n",
 		planet.ID, planet.PublicIPv4)
 
 	s.bus.Emit(events.Event{
@@ -176,7 +170,7 @@ func (s *Sovereign) collectFromPlanet(planet *Planet) error {
 		return fmt.Errorf("planet %d: create report dir: %w", planet.ID, err)
 	}
 
-	cmd := exec.CommandContext(s.ctx,
+	_, _, err := s.cmd.Run(s.ctx, "", nil,
 		"scp",
 		"-i", s.planetSSHKeyPath(planet),
 		"-o", "StrictHostKeyChecking=no",
@@ -185,10 +179,7 @@ func (s *Sovereign) collectFromPlanet(planet *Planet) error {
 			planet.RemoteUser, planet.PublicIPv4),
 		localDir,
 	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		planet.mu.Lock()
 		planet.Status = PlanetStatusLost
 		planet.Error = err
@@ -217,7 +208,7 @@ func (s *Sovereign) collectFromPlanet(planet *Planet) error {
 		PublicIPv4: planet.PublicIPv4,
 	})
 
-	fmt.Printf("  sovereign: planet %d results collected to %s\n",
+	fmt.Fprintf(s.out, "  sovereign: planet %d results collected to %s\n",
 		planet.ID, localDir)
 
 	return nil
@@ -240,13 +231,13 @@ func (s *Sovereign) buildLemmingsCommand(planet *Planet) string {
 	return cmd
 }
 
-// copyPlanFile SCPs the local lemmings plan YAML file to the planet.
+// copyPlanFile SCPs the local lemmings plan YAML file to the planet
+// via Commander.
 func (s *Sovereign) copyPlanFile(planet *Planet) error {
 	if s.cfg.Plan == "" {
 		return nil
 	}
-
-	cmd := exec.CommandContext(s.ctx,
+	_, _, err := s.cmd.Run(s.ctx, "", nil,
 		"scp",
 		"-i", s.planetSSHKeyPath(planet),
 		"-o", "StrictHostKeyChecking=no",
@@ -254,13 +245,9 @@ func (s *Sovereign) copyPlanFile(planet *Planet) error {
 		fmt.Sprintf("%s@%s:/home/%s/lemmings.plan.yml",
 			planet.RemoteUser, planet.PublicIPv4, planet.RemoteUser),
 	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		return fmt.Errorf("scp plan file to planet %d: %w", planet.ID, err)
 	}
-
 	return nil
 }
 

@@ -94,6 +94,9 @@ func main() {
 	figs.NewList("save-to", []string{defaultSaveTo}, "Report delivery destinations").
 		WithAlias("save-to", "s")
 
+	figs.NewString("save-to-key", "", "SSH private key path for ssh:// save-to destinations").
+		WithAlias("save-to-key", "sk")
+
 	// -- Infrastructure ------------------------------------------------------
 
 	figs.NewString("provider", defaultProvider, "Cloud provider: aws").
@@ -183,14 +186,15 @@ func main() {
 
 	cfg := SovereignConfig{
 		// Core
-		Hit:     *figs.String("hit"),
-		Planets: *figs.Int("planets"),
-		Terrain: *figs.Int64("terrain"),
-		Pack:    *figs.Int64("pack"),
-		Until:   *figs.Duration("until"),
-		Ramp:    *figs.Duration("ramp"),
-		Plan:    *figs.String("plan"),
-		SaveTo:  *figs.List("save-to"),
+		Hit:       *figs.String("hit"),
+		Planets:   *figs.Int("planets"),
+		Terrain:   *figs.Int64("terrain"),
+		Pack:      *figs.Int64("pack"),
+		Until:     *figs.Duration("until"),
+		Ramp:      *figs.Duration("ramp"),
+		Plan:      *figs.String("plan"),
+		SaveTo:    *figs.List("save-to"),
+		SaveToKey: *figs.String("save-to-key"),
 
 		// Infrastructure
 		Provider:         *figs.String("provider"),

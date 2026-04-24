@@ -105,9 +105,11 @@ func backupHCL(spec tfprovider.HCLSpec, terraformDir string, files []hclFile) er
 
 // -- HCL Templates -----------------------------------------------------------
 //
-// All values are rendered directly from HCLSpec. No terraform variables
-// are used -- sovereign generates a complete, self-contained terraform
-// directory per planet with no external variable files required.
+// Credentials are never rendered into HCL files. AWS credentials are
+// passed to the terraform subprocess via environment variables in env().
+// The terraform AWS provider reads AWS_ACCESS_KEY_ID and
+// AWS_SECRET_ACCESS_KEY from the subprocess environment automatically
+// when no credential attributes are present in the provider block.
 
 const providerTF = `terraform {
   required_providers {
@@ -119,9 +121,7 @@ const providerTF = `terraform {
 }
 
 provider "aws" {
-  region     = "{{ .Region }}"
-  access_key = "{{ .AccessKey }}"
-  secret_key = "{{ .SecretKey }}"
+  region = "{{ .Region }}"
 }
 `
 
@@ -183,8 +183,8 @@ const resourcesComputeTF = `resource "aws_instance" "planet" {
   EOF
 
   tags = {
-    Name     = "sovereign-planet-{{ .PlanetID }}"
-    Slug     = "{{ .Slug }}"
+    Name      = "sovereign-planet-{{ .PlanetID }}"
+    Slug      = "{{ .Slug }}"
     ManagedBy = "sovereign"
   }
 }

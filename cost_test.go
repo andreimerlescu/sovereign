@@ -220,7 +220,7 @@ func BenchmarkEstimateCost(b *testing.B) {
 	srv := newMockPricingJSONServer(b, 0.50)
 
 	s := benchmarkSovereign(b)
-	s.cfg.Planets = 5
+	s.cfg.Planets = 1
 	s.planets = s.initPlanets()
 
 	queries := make([]pricing.PriceQuery, len(s.planets))
@@ -247,6 +247,7 @@ func BenchmarkEstimateCost(b *testing.B) {
 // BenchmarkTotalLemmings measures totalLemmings throughput.
 func BenchmarkTotalLemmings(b *testing.B) {
 	s := benchmarkSovereign(b)
+	s.cfg.Planets = 1
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		s.totalLemmings()

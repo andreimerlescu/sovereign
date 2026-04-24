@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/andreimerlescu/sovereign/pkg/commander"
 	"github.com/andreimerlescu/sovereign/pkg/events"
 	"github.com/andreimerlescu/sovereign/pkg/ledger"
 	"github.com/andreimerlescu/sovereign/pkg/pricing"
@@ -33,6 +35,10 @@ type SovereignConfig struct {
 	Provider string
 	Regions  []string
 	SaveTo   []string
+	// SaveToKey is the SSH private key path used when a save-to destination
+	// uses the ssh:// scheme. If empty the SSH deliverer omits -i and
+	// relies on the SSH agent.
+	SaveToKey string
 
 	// Timeouts
 	ProvisionTimeout time.Duration
@@ -149,6 +155,8 @@ type Sovereign struct {
 	provider  tfprovider.TerraformProvider
 	ledger    *ledger.Ledger
 	bus       *events.EventBus
+	cmd       commander.Commander
+	out       io.Writer
 }
 
 // NewSovereign constructs a Sovereign, initializes the provider, event
@@ -161,7 +169,9 @@ func NewSovereign(ctx context.Context, cfg SovereignConfig) (*Sovereign, error) 
 		ctx:       ctx,
 		cancel:    cancel,
 		startedAt: time.Now(),
+		out:       os.Stdout,
 	}
+	s.cmd = &commander.RealCommander{}
 
 	// resolve state file
 	stateFile, err := s.resolveStateFile()
@@ -204,7 +214,7 @@ func NewSovereign(ctx context.Context, cfg SovereignConfig) (*Sovereign, error) 
 	// load existing state or initialize fresh
 	existing, loadErr := s.loadState()
 	if loadErr == nil && existing != nil {
-		fmt.Printf("  sovereign: resuming from existing state at %s\n", stateFile)
+		fmt.Fprintf(s.out, "  sovereign: resuming from existing state at %s\n", stateFile)
 		s.bus.Emit(events.Event{
 			Kind:   events.KindRunResumed,
 			Detail: stateFile,
@@ -238,7 +248,7 @@ func (s *Sovereign) Run() error {
 
 	// Step 2 -- dry run exits after estimate
 	if s.cfg.DryRun {
-		fmt.Println("  sovereign: dry-run complete -- no infrastructure provisioned")
+		fmt.Fprintln(s.out, "  sovereign: dry-run complete -- no infrastructure provisioned")
 		return nil
 	}
 
@@ -250,39 +260,39 @@ func (s *Sovereign) Run() error {
 	}
 
 	// Step 4 -- provision terrain
-	fmt.Println("  sovereign: provisioning terrain...")
+	fmt.Fprintln(s.out, "  sovereign: provisioning terrain...")
 	if err := s.provisionTerrain(); err != nil {
 		return fmt.Errorf("sovereign: provision terrain: %w", err)
 	}
 
 	// Step 5 -- persist state for crash recovery
 	if err := s.saveState(); err != nil {
-		fmt.Printf("  sovereign: warning: failed to save state: %v\n", err)
+		fmt.Fprintf(s.out, "  sovereign: warning: failed to save state: %v\n", err)
 	}
 
 	// Step 6 -- run lemmings on each planet
-	fmt.Println("  sovereign: running lemmings on planets...")
+	fmt.Fprintln(s.out, "  sovereign: running lemmings on planets...")
 	if err := s.runLemmings(); err != nil {
 		_ = s.destroyTerrain()
 		return fmt.Errorf("sovereign: run lemmings: %w", err)
 	}
 
 	// Step 7 -- collect results from each planet
-	fmt.Println("  sovereign: collecting results from planets...")
+	fmt.Fprintln(s.out, "  sovereign: collecting results from planets...")
 	if err := s.collectResults(); err != nil {
 		_ = s.destroyTerrain()
 		return fmt.Errorf("sovereign: collect results: %w", err)
 	}
 
 	// Step 8 -- aggregate unified report
-	fmt.Println("  sovereign: aggregating unified report...")
+	fmt.Fprintln(s.out, "  sovereign: aggregating unified report...")
 	if err := s.aggregateReport(); err != nil {
 		_ = s.destroyTerrain()
 		return fmt.Errorf("sovereign: aggregate report: %w", err)
 	}
 
 	// Step 9 -- destroy terrain
-	fmt.Println("  sovereign: destroying terrain...")
+	fmt.Fprintln(s.out, "  sovereign: destroying terrain...")
 	if err := s.destroyTerrain(); err != nil {
 		return fmt.Errorf("sovereign: destroy terrain: %w", err)
 	}
@@ -332,7 +342,7 @@ func (s *Sovereign) defaultRegions() []string {
 
 // confirmWithUser prompts the engineer before provisioning.
 func (s *Sovereign) confirmWithUser() error {
-	fmt.Print("  sovereign: proceed with provisioning? [y/N] ")
+	fmt.Fprint(s.out, "  sovereign: proceed with provisioning? [y/N] ")
 	var response string
 	_, err := fmt.Scanln(&response)
 	if err != nil || (response != "y" && response != "Y") {
@@ -343,18 +353,18 @@ func (s *Sovereign) confirmWithUser() error {
 
 // printCostEstimate prints the projected cost before provisioning.
 func (s *Sovereign) printCostEstimate(estimate *CostEstimate) {
-	fmt.Println()
-	fmt.Println("  sovereign: projected cost estimate (via instances.vantage.sh)")
-	fmt.Println("  ──────────────────────────────────────────────────────────────")
+	fmt.Fprintln(s.out)
+	fmt.Fprintln(s.out, "  sovereign: projected cost estimate (via instances.vantage.sh)")
+	fmt.Fprintln(s.out, "  ──────────────────────────────────────────────────────────────")
 	for _, p := range estimate.Planets {
-		fmt.Printf("    planet %d  %s  %s  %s/hr\n",
+		fmt.Fprintf(s.out, "    planet %d  %s  %s  %s/hr\n",
 			p.ID, p.Region, p.InstanceType,
 			pricing.MicrocentsToDetailedDisplay(p.HourlyRate))
 	}
-	fmt.Printf("\n    total planets:   %d\n", len(estimate.Planets))
-	fmt.Printf("    est. duration:   %s\n", estimate.Duration.Round(time.Second))
-	fmt.Printf("    projected cost:  %s\n", pricing.MicrocentsToDisplay(estimate.TotalCost))
-	fmt.Println()
+	fmt.Fprintf(s.out, "\n    total planets:   %d\n", len(estimate.Planets))
+	fmt.Fprintf(s.out, "    est. duration:   %s\n", estimate.Duration.Round(time.Second))
+	fmt.Fprintf(s.out, "    projected cost:  %s\n", pricing.MicrocentsToDisplay(estimate.TotalCost))
+	fmt.Fprintln(s.out)
 }
 
 // printFinalSummary writes the post-run summary to stdout.
@@ -369,20 +379,20 @@ func (s *Sovereign) printFinalSummary() {
 			lost++
 		}
 	}
-	fmt.Println()
-	fmt.Println("─────────────────────────────────────────")
-	fmt.Printf("  sovereign v%s -- final summary\n", s.cfg.Version)
-	fmt.Println("─────────────────────────────────────────")
-	fmt.Printf("  target:    %s\n", s.cfg.Hit)
-	fmt.Printf("  provider:  %s\n", s.cfg.Provider)
-	fmt.Printf("  planets:   %d provisioned\n", len(s.planets))
-	fmt.Printf("  completed: %d\n", done)
+	fmt.Fprintln(s.out)
+	fmt.Fprintln(s.out, "─────────────────────────────────────────")
+	fmt.Fprintf(s.out, "  sovereign v%s -- final summary\n", s.cfg.Version)
+	fmt.Fprintln(s.out, "─────────────────────────────────────────")
+	fmt.Fprintf(s.out, "  target:    %s\n", s.cfg.Hit)
+	fmt.Fprintf(s.out, "  provider:  %s\n", s.cfg.Provider)
+	fmt.Fprintf(s.out, "  planets:   %d provisioned\n", len(s.planets))
+	fmt.Fprintf(s.out, "  completed: %d\n", done)
 	if lost > 0 {
-		fmt.Printf("  lost:      %d (manual intervention required)\n", lost)
+		fmt.Fprintf(s.out, "  lost:      %d (manual intervention required)\n", lost)
 	}
-	fmt.Printf("  ledger:    %s\n", s.ledger.Path())
-	fmt.Printf("  elapsed:   %s\n", elapsed)
-	fmt.Println("─────────────────────────────────────────")
+	fmt.Fprintf(s.out, "  ledger:    %s\n", s.ledger.Path())
+	fmt.Fprintf(s.out, "  elapsed:   %s\n", elapsed)
+	fmt.Fprintln(s.out, "─────────────────────────────────────────")
 }
 
 // newProvider constructs the TerraformProvider for the configured
