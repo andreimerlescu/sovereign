@@ -471,9 +471,9 @@ func TestFilter_PassesMatchingKinds(t *testing.T) {
 	}, KindProvisionStart, KindProvisionComplete)
 
 	fn(Event{Kind: KindProvisionStart})
-	fn(Event{Kind: KindApplyComplete})    // not in filter
+	fn(Event{Kind: KindApplyComplete}) // not in filter
 	fn(Event{Kind: KindProvisionComplete})
-	fn(Event{Kind: KindDestroyStart})     // not in filter
+	fn(Event{Kind: KindDestroyStart}) // not in filter
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -535,9 +535,9 @@ func TestFilter_Integration(t *testing.T) {
 	}, KindProvisionStart, KindProvisionFailed))
 
 	bus.Emit(Event{Kind: KindProvisionStart, PlanetID: 1})
-	bus.Emit(Event{Kind: KindApplyComplete, PlanetID: 1})  // filtered
+	bus.Emit(Event{Kind: KindApplyComplete, PlanetID: 1}) // filtered
 	bus.Emit(Event{Kind: KindProvisionFailed, PlanetID: 1})
-	bus.Emit(Event{Kind: KindDestroyStart, PlanetID: 1})   // filtered
+	bus.Emit(Event{Kind: KindDestroyStart, PlanetID: 1}) // filtered
 
 	mu.Lock()
 	defer mu.Unlock()

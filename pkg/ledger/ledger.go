@@ -20,15 +20,15 @@ import (
 // events.Event.OccurredAt and is promoted to a top-level field for
 // YAML readability.
 type Entry struct {
-	Timestamp  time.Time       `yaml:"Timestamp"`
+	Timestamp  time.Time        `yaml:"Timestamp"`
 	Kind       events.EventKind `yaml:"Kind"`
-	PlanetID   int             `yaml:"PlanetID"`
-	Provider   string          `yaml:"Provider,omitempty"`
-	Region     string          `yaml:"Region,omitempty"`
-	InstanceID string          `yaml:"InstanceID,omitempty"`
-	PublicIPv4 string          `yaml:"PublicIPv4,omitempty"`
-	Detail     string          `yaml:"Detail,omitempty"`
-	Error      string          `yaml:"Error,omitempty"`
+	PlanetID   int              `yaml:"PlanetID"`
+	Provider   string           `yaml:"Provider,omitempty"`
+	Region     string           `yaml:"Region,omitempty"`
+	InstanceID string           `yaml:"InstanceID,omitempty"`
+	PublicIPv4 string           `yaml:"PublicIPv4,omitempty"`
+	Detail     string           `yaml:"Detail,omitempty"`
+	Error      string           `yaml:"Error,omitempty"`
 }
 
 // entryFromEvent converts an events.Event into a ledger Entry.

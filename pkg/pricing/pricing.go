@@ -53,8 +53,8 @@ type PriceQuery struct {
 // HourlyRate is in int64 microcents. Zero indicates pricing was
 // unavailable for this query.
 type PriceResult struct {
-	Query       PriceQuery
-	HourlyRate  int64 // microcents per hour
+	Query         PriceQuery
+	HourlyRate    int64 // microcents per hour
 	ProjectedCost int64 // microcents for the estimated duration
 }
 
