@@ -28,11 +28,15 @@ type ReportDeliverer interface {
 //	file:///path                  write to local filesystem
 //	/path or ./path or .          write to local filesystem
 //
+// Destinations containing :// with an unrecognised scheme return an
+// error rather than being silently treated as a local path. This
+// prevents unknown schemes from creating directories on disk.
+//
 // The cmd argument is used by S3 and SSH deliverers for subprocess
 // execution. It may be nil for local and FTP deliverers.
 //
 // The identity argument is the SSH private key path for SSHDeliverer.
-// The ftpUsername and ftpPassword arguments are credentials for FTPDeliverer.
+// FTP credentials are supplied via WithFTPCredentials.
 func New(dest, identity string, cmd commander.Commander, opts ...DelivererOption) (ReportDeliverer, error) {
 	o := delivererOptions{}
 	for _, opt := range opts {
@@ -48,6 +52,11 @@ func New(dest, identity string, cmd commander.Commander, opts ...DelivererOption
 	case strings.HasPrefix(dest, "file://"):
 		path := strings.TrimPrefix(dest, "file://")
 		return newLocalDeliverer(path)
+	case strings.Contains(dest, "://"):
+		// Unknown scheme. Reject rather than treating as a local path,
+		// which would silently create directories named after the scheme.
+		scheme := strings.SplitN(dest, "://", 2)[0]
+		return nil, fmt.Errorf("deliverer: unsupported scheme %q in destination %q", scheme, dest)
 	default:
 		return newLocalDeliverer(dest)
 	}
