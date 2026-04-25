@@ -42,7 +42,7 @@ func (p *TerraformProviderAWS) Name() string {
 // Validate checks that credentials are present and the terraform
 // binary is available in PATH.
 func (p *TerraformProviderAWS) Validate() error {
-	if p.creds.AccessKey == "" || p.creds.AccessSecretKey == "" {
+	if p.creds.AccessKeyID == "" || p.creds.SecretAccessKey == "" {
 		return fmt.Errorf("aws: credentials not resolved -- call New()")
 	}
 	return exeggutor.Validate()
@@ -146,14 +146,14 @@ func (p *TerraformProviderAWS) UnloadState(_ tfprovider.PlanetSpec) error {
 // -- private helpers ---------------------------------------------------------
 
 // env returns the environment for terraform subprocess calls.
-// Credentials are passed as environment variables so they never
-// appear in HCL files or backup directories.
+// Credentials use the standard AWS environment variable names so the
+// Terraform AWS provider reads them without any additional configuration.
 func (p *TerraformProviderAWS) env() []string {
 	return []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + os.Getenv("HOME"),
-		"AWS_ACCESS_KEY_ID=" + p.creds.AccessKey,
-		"AWS_SECRET_ACCESS_KEY=" + p.creds.AccessSecretKey,
+		"AWS_ACCESS_KEY_ID=" + p.creds.AccessKeyID,
+		"AWS_SECRET_ACCESS_KEY=" + p.creds.SecretAccessKey,
 	}
 }
 

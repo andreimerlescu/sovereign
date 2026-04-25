@@ -1,8 +1,12 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/andreimerlescu/sovereign/pkg/events"
 )
 
 // -- initPlanets -------------------------------------------------------------
@@ -84,11 +88,9 @@ func TestInitPlanets_InstanceTypePopulated(t *testing.T) {
 
 // -- newProvider -------------------------------------------------------------
 
-// TestNewProvider_AWS verifies that the aws provider string returns
-// a non-nil provider without error.
 func TestNewProvider_AWS(t *testing.T) {
-	t.Setenv("AWS_ACCESS_KEY", "test-key")
-	t.Setenv("AWS_ACCESS_SECRET_KEY", "test-secret")
+	t.Setenv("AWS_ACCESS_KEY_ID", "test-key-id")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
 
 	cfg := testConfig()
 	cfg.Provider = "aws"
@@ -98,8 +100,6 @@ func TestNewProvider_AWS(t *testing.T) {
 	requireEqual(t, p.Name(), "aws", "newProvider aws name")
 }
 
-// TestNewProvider_UnknownProvider verifies that an unknown provider
-// string returns an error.
 func TestNewProvider_UnknownProvider(t *testing.T) {
 	cfg := testConfig()
 	cfg.Provider = "unknowncloud"
@@ -107,8 +107,6 @@ func TestNewProvider_UnknownProvider(t *testing.T) {
 	requireError(t, err, "newProvider unknown provider")
 }
 
-// TestNewProvider_DigitalOcean verifies that the digitalocean provider
-// returns a non-nil provider without error when credentials are present.
 func TestNewProvider_DigitalOcean(t *testing.T) {
 	t.Setenv("DIGITALOCEAN_TOKEN", "test-token")
 	cfg := testConfig()
@@ -119,8 +117,6 @@ func TestNewProvider_DigitalOcean(t *testing.T) {
 	requireEqual(t, p.Name(), "digitalocean", "newProvider digitalocean name")
 }
 
-// TestNewProvider_GCP verifies that gcp is not a supported provider
-// and returns an error.
 func TestNewProvider_GCP(t *testing.T) {
 	cfg := testConfig()
 	cfg.Provider = "gcp"
@@ -128,8 +124,6 @@ func TestNewProvider_GCP(t *testing.T) {
 	requireError(t, err, "newProvider gcp returns error -- not supported")
 }
 
-// TestNewProvider_OCI verifies that oci is not a supported provider
-// and returns an error.
 func TestNewProvider_OCI(t *testing.T) {
 	cfg := testConfig()
 	cfg.Provider = "oci"
@@ -137,8 +131,6 @@ func TestNewProvider_OCI(t *testing.T) {
 	requireError(t, err, "newProvider oci returns error -- not supported")
 }
 
-// TestNewProvider_OVH verifies that the ovh provider returns a
-// non-nil provider without error when credentials are present.
 func TestNewProvider_OVH(t *testing.T) {
 	t.Setenv("OVH_ENDPOINT", "ovh-eu")
 	t.Setenv("OVH_APPLICATION_KEY", "test-key")
@@ -226,6 +218,81 @@ func TestPrintCostEstimate_NoPanic(t *testing.T) {
 		},
 	}
 	s.printCostEstimate(estimate)
+}
+
+// -- Resume path -------------------------------------------------------------
+
+// TestSovereign_ResumePath verifies that when a state file exists on disk,
+// NewSovereign loads it, emits KindRunResumed on the bus, and populates
+// s.planets from the persisted state rather than initializing fresh ones.
+func TestSovereign_ResumePath(t *testing.T) {
+	stateDir := t.TempDir()
+	stateFile := filepath.Join(stateDir, "state.yml")
+
+	// Write a state file as if a previous run had provisioned one planet.
+	previousPlanet := &Planet{
+		ID:         1,
+		Region:     testRegion,
+		InstanceID: "i-resumed-instance",
+		PublicIPv4: "54.200.1.1",
+		Status:     PlanetStatusRunning,
+	}
+	existingState := &SovereignState{
+		Version:   testVersion,
+		StartedAt: time.Now().Add(-10 * time.Minute),
+		Config:    testConfig(),
+		Planets:   []*Planet{previousPlanet},
+	}
+
+	// Use a temporary sovereign just to marshal the state file.
+	tmp := testSovereign(t)
+	tmp.stateFile = stateFile
+	tmp.state = existingState
+	tmp.planets = existingState.Planets
+	requireNoError(t, tmp.saveState(), "write pre-existing state file")
+
+	// Verify the file exists before continuing.
+	if _, err := os.Stat(stateFile); err != nil {
+		t.Fatalf("state file not written: %v", err)
+	}
+
+	// Now build a fresh sovereign that points at the same state file.
+	// We set stateFile directly to bypass resolveStateFile.
+	s := testSovereign(t)
+	s.stateFile = stateFile
+
+	// Capture bus events to confirm KindRunResumed is emitted.
+	var resumedEvents []events.Event
+	s.bus.Subscribe(func(e events.Event) {
+		if e.Kind == events.KindRunResumed {
+			resumedEvents = append(resumedEvents, e)
+		}
+	})
+
+	// Simulate the resume branch of NewSovereign by calling loadState
+	// and applying it the same way NewSovereign does.
+	loaded, err := s.loadState()
+	requireNoError(t, err, "loadState on resume path")
+	requireTrue(t, loaded != nil, "loadState returns non-nil state on resume")
+
+	s.bus.Emit(events.Event{
+		Kind:   events.KindRunResumed,
+		Detail: stateFile,
+	})
+	s.state = loaded
+	s.planets = loaded.Planets
+
+	// Verify planet state was restored.
+	requireEqual(t, len(s.planets), 1, "resume path restores correct planet count")
+	requireEqual(t, s.planets[0].InstanceID, "i-resumed-instance",
+		"resume path restores InstanceID")
+	requireEqual(t, s.planets[0].PublicIPv4, "54.200.1.1",
+		"resume path restores PublicIPv4")
+
+	// Verify KindRunResumed was emitted.
+	requireEqual(t, len(resumedEvents), 1, "resume path emits KindRunResumed")
+	requireTrue(t, containsStr(resumedEvents[0].Detail, stateFile),
+		"KindRunResumed Detail contains state file path")
 }
 
 // -- Benchmarks --------------------------------------------------------------

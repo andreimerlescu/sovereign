@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,6 +40,17 @@ type SovereignConfig struct {
 	// uses the ssh:// scheme. If empty the SSH deliverer omits -i and
 	// relies on the SSH agent.
 	SaveToKey string
+
+	// SSHOptions are extra OpenSSH -o arguments passed to every ssh and
+	// scp invocation sovereign makes. They are appended after the built-in
+	// StrictHostKeyChecking=no and ConnectTimeout=30 options, so they may
+	// override the defaults if needed. Example:
+	//   []string{"UserKnownHostsFile=/path/to/known_hosts", "StrictHostKeyChecking=yes"}
+	SSHOptions []string
+
+	// FTPUsername and FTPPassword are credentials for ftp:// save-to destinations.
+	FTPUsername string
+	FTPPassword string
 
 	// Timeouts
 	ProvisionTimeout time.Duration
@@ -87,8 +99,6 @@ const (
 	PlanetStatusLost         PlanetStatus = "lost"
 )
 
-// defaultAWSRegions is used when no regions are specified and the
-// provider is aws.
 var defaultAWSRegions = []string{
 	"us-east-1",
 	"us-west-1",
@@ -97,8 +107,6 @@ var defaultAWSRegions = []string{
 	"sa-east-1",
 }
 
-// defaultDORegions is used when no regions are specified and the
-// provider is digitalocean.
 var defaultDORegions = []string{
 	"nyc1",
 	"sfo3",
@@ -107,8 +115,6 @@ var defaultDORegions = []string{
 	"lon1",
 }
 
-// defaultOVHRegions is used when no regions are specified and the
-// provider is ovh.
 var defaultOVHRegions = []string{
 	"GRA11",
 	"SBG5",
@@ -173,7 +179,6 @@ func NewSovereign(ctx context.Context, cfg SovereignConfig) (*Sovereign, error) 
 	}
 	s.cmd = &commander.RealCommander{}
 
-	// resolve state file
 	stateFile, err := s.resolveStateFile()
 	if err != nil {
 		cancel()
@@ -181,7 +186,6 @@ func NewSovereign(ctx context.Context, cfg SovereignConfig) (*Sovereign, error) 
 	}
 	s.stateFile = stateFile
 
-	// initialize provider
 	provider, err := newProvider(cfg)
 	if err != nil {
 		cancel()
@@ -193,10 +197,8 @@ func NewSovereign(ctx context.Context, cfg SovereignConfig) (*Sovereign, error) 
 	}
 	s.provider = provider
 
-	// initialize event bus
 	s.bus = events.NewEventBus()
 
-	// initialize ledger and wire it as the first bus subscriber
 	home, err := os.UserHomeDir()
 	if err != nil {
 		cancel()
@@ -211,7 +213,6 @@ func NewSovereign(ctx context.Context, cfg SovereignConfig) (*Sovereign, error) 
 	s.ledger = l
 	s.bus.Subscribe(s.ledger.AsSubscriber())
 
-	// load existing state or initialize fresh
 	existing, loadErr := s.loadState()
 	if loadErr == nil && existing != nil {
 		fmt.Fprintf(s.out, "  sovereign: resuming from existing state at %s\n", stateFile)
@@ -235,80 +236,85 @@ func NewSovereign(ctx context.Context, cfg SovereignConfig) (*Sovereign, error) 
 }
 
 // Run executes the full sovereign lifecycle in order.
+//
+// Destroy-on-failure policy:
+//   - Step 4 (provisioning): if provisionTerrain returns an error, any
+//     planets already marked PlanetStatusRunning are destroyed before
+//     returning. This prevents orphaned instances when planet 1 succeeds
+//     and planet 2+ fail.
+//   - Steps 6, 7, 8 (lemmings, collection, report): destroyTerrain is
+//     called before returning the error.
+//   - Step 9 (destroy): errors are returned directly; the caller must
+//     handle manual cleanup using the instance IDs logged to stderr.
 func (s *Sovereign) Run() error {
 	defer s.cancel()
 	defer s.bus.Close()
 
-	// Step 1 -- estimate cost
 	estimate, err := s.estimateCost()
 	if err != nil {
 		return fmt.Errorf("sovereign: cost estimation: %w", err)
 	}
 	s.printCostEstimate(estimate)
 
-	// Step 2 -- dry run exits after estimate
 	if s.cfg.DryRun {
 		fmt.Fprintln(s.out, "  sovereign: dry-run complete -- no infrastructure provisioned")
 		return nil
 	}
 
-	// Step 3 -- confirm unless --yes flag set
 	if !s.cfg.Yes {
 		if err := s.confirmWithUser(); err != nil {
 			return fmt.Errorf("sovereign: aborted by user")
 		}
 	}
 
-	// Step 4 -- provision terrain
 	fmt.Fprintln(s.out, "  sovereign: provisioning terrain...")
 	if err := s.provisionTerrain(); err != nil {
+		// Destroy any planets that were already provisioned before the
+		// error occurred. Errors from destroy are secondary -- log them
+		// but return the original provisioning error.
+		if destroyErr := s.destroyTerrain(); destroyErr != nil {
+			fmt.Fprintf(os.Stderr, "  sovereign: additionally failed to destroy terrain: %v\n", destroyErr)
+		}
 		return fmt.Errorf("sovereign: provision terrain: %w", err)
 	}
 
-	// Step 5 -- persist state for crash recovery
 	if err := s.saveState(); err != nil {
 		fmt.Fprintf(s.out, "  sovereign: warning: failed to save state: %v\n", err)
 	}
 
-	// Step 6 -- run lemmings on each planet
 	fmt.Fprintln(s.out, "  sovereign: running lemmings on planets...")
 	if err := s.runLemmings(); err != nil {
 		_ = s.destroyTerrain()
+		if errors.Is(err, ErrAllPlanetsLost) {
+			return fmt.Errorf("sovereign: all planets lost during lemmings execution -- terrain destroyed")
+		}
 		return fmt.Errorf("sovereign: run lemmings: %w", err)
 	}
 
-	// Step 7 -- collect results from each planet
 	fmt.Fprintln(s.out, "  sovereign: collecting results from planets...")
 	if err := s.collectResults(); err != nil {
 		_ = s.destroyTerrain()
 		return fmt.Errorf("sovereign: collect results: %w", err)
 	}
 
-	// Step 8 -- aggregate unified report
 	fmt.Fprintln(s.out, "  sovereign: aggregating unified report...")
 	if err := s.aggregateReport(); err != nil {
 		_ = s.destroyTerrain()
 		return fmt.Errorf("sovereign: aggregate report: %w", err)
 	}
 
-	// Step 9 -- destroy terrain
 	fmt.Fprintln(s.out, "  sovereign: destroying terrain...")
 	if err := s.destroyTerrain(); err != nil {
 		return fmt.Errorf("sovereign: destroy terrain: %w", err)
 	}
 
-	// Step 10 -- clean up state file on successful completion
 	s.cleanState()
-
 	s.printFinalSummary()
 
 	return nil
 }
 
 // initPlanets builds the initial planet list from config.
-// Regions are distributed round-robin across the requested planet count.
-// Default regions are selected based on the configured provider when
-// no regions are specified by the operator.
 func (s *Sovereign) initPlanets() []*Planet {
 	regions := s.cfg.Regions
 	if len(regions) == 0 {

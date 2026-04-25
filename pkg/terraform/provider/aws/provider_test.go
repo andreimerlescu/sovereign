@@ -13,8 +13,8 @@ import (
 
 func testCredentials() Credentials {
 	return Credentials{
-		AccessKey:       "test-access-key",
-		AccessSecretKey: "test-secret-key",
+		AccessKeyID:     "test-access-key-id",
+		SecretAccessKey: "test-secret-access-key",
 	}
 }
 
@@ -91,50 +91,50 @@ func writeFakeSSHKey(t *testing.T, keyPath string) {
 // -- Resolve -----------------------------------------------------------------
 
 func TestResolve_MissingBothKeys(t *testing.T) {
-	t.Setenv("AWS_ACCESS_KEY", "")
-	t.Setenv("AWS_ACCESS_SECRET_KEY", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
 	_, err := Resolve()
 	if err == nil {
 		t.Fatal("expected error for missing credentials, got nil")
 	}
 }
 
-func TestResolve_MissingAccessKey(t *testing.T) {
-	t.Setenv("AWS_ACCESS_KEY", "")
-	t.Setenv("AWS_ACCESS_SECRET_KEY", "test-secret")
+func TestResolve_MissingAccessKeyID(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
 	_, err := Resolve()
 	if err == nil {
-		t.Fatal("expected error for missing AWS_ACCESS_KEY")
+		t.Fatal("expected error for missing AWS_ACCESS_KEY_ID")
 	}
 }
 
-func TestResolve_MissingSecretKey(t *testing.T) {
-	t.Setenv("AWS_ACCESS_KEY", "test-key")
-	t.Setenv("AWS_ACCESS_SECRET_KEY", "")
+func TestResolve_MissingSecretAccessKey(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "test-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
 	_, err := Resolve()
 	if err == nil {
-		t.Fatal("expected error for missing AWS_ACCESS_SECRET_KEY")
+		t.Fatal("expected error for missing AWS_SECRET_ACCESS_KEY")
 	}
 }
 
 func TestResolve_BothPresent(t *testing.T) {
-	t.Setenv("AWS_ACCESS_KEY", "test-key")
-	t.Setenv("AWS_ACCESS_SECRET_KEY", "test-secret")
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
 	creds, err := Resolve()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if creds.AccessKey != "test-key" {
-		t.Errorf("AccessKey: got %q want test-key", creds.AccessKey)
+	if creds.AccessKeyID != "AKIAIOSFODNN7EXAMPLE" {
+		t.Errorf("AccessKeyID: got %q want AKIAIOSFODNN7EXAMPLE", creds.AccessKeyID)
 	}
-	if creds.AccessSecretKey != "test-secret" {
-		t.Errorf("AccessSecretKey: got %q want test-secret", creds.AccessSecretKey)
+	if creds.SecretAccessKey != "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" {
+		t.Errorf("SecretAccessKey: got %q want wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", creds.SecretAccessKey)
 	}
 }
 
 func TestResolve_ErrorMentionsMissingVars(t *testing.T) {
-	t.Setenv("AWS_ACCESS_KEY", "")
-	t.Setenv("AWS_ACCESS_SECRET_KEY", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
 	_, err := Resolve()
 	if err == nil {
 		t.Fatal("expected error")
@@ -148,8 +148,8 @@ func TestResolve_ErrorMentionsMissingVars(t *testing.T) {
 // -- New ---------------------------------------------------------------------
 
 func TestNew_MissingCredentials(t *testing.T) {
-	t.Setenv("AWS_ACCESS_KEY", "")
-	t.Setenv("AWS_ACCESS_SECRET_KEY", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
 	_, err := New()
 	if err == nil {
 		t.Fatal("expected error for missing credentials")
@@ -157,8 +157,8 @@ func TestNew_MissingCredentials(t *testing.T) {
 }
 
 func TestNew_ValidCredentials(t *testing.T) {
-	t.Setenv("AWS_ACCESS_KEY", "test-key")
-	t.Setenv("AWS_ACCESS_SECRET_KEY", "test-secret")
+	t.Setenv("AWS_ACCESS_KEY_ID", "test-key-id")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
 	p, err := New()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -187,33 +187,30 @@ func TestValidate_EmptyCredentials(t *testing.T) {
 	}
 }
 
-func TestValidate_EmptyAccessKey(t *testing.T) {
+func TestValidate_EmptyAccessKeyID(t *testing.T) {
 	p := &TerraformProviderAWS{creds: Credentials{
-		AccessKey:       "",
-		AccessSecretKey: "test-secret",
+		AccessKeyID:     "",
+		SecretAccessKey: "test-secret",
 	}}
 	err := p.Validate()
 	if err == nil {
-		t.Fatal("expected error for empty AccessKey")
+		t.Fatal("expected error for empty AccessKeyID")
 	}
 }
 
-func TestValidate_EmptySecretKey(t *testing.T) {
+func TestValidate_EmptySecretAccessKey(t *testing.T) {
 	p := &TerraformProviderAWS{creds: Credentials{
-		AccessKey:       "test-key",
-		AccessSecretKey: "",
+		AccessKeyID:     "test-key",
+		SecretAccessKey: "",
 	}}
 	err := p.Validate()
 	if err == nil {
-		t.Fatal("expected error for empty AccessSecretKey")
+		t.Fatal("expected error for empty SecretAccessKey")
 	}
 }
 
 func TestValidate_ValidCredentialsTerraformAbsent(t *testing.T) {
 	p := testProvider(t)
-	// Validate checks terraform binary -- may pass or fail depending on
-	// whether terraform is installed in the test environment. We verify
-	// it does not panic and returns a typed result.
 	_ = p.Validate()
 }
 
@@ -516,10 +513,24 @@ func TestEnv_ContainsRequiredKeys(t *testing.T) {
 	}
 }
 
+func TestEnv_DoesNotContainLegacyKeys(t *testing.T) {
+	p := testProvider(t)
+	env := p.env()
+
+	legacy := []string{"AWS_ACCESS_KEY=", "AWS_ACCESS_SECRET_KEY="}
+	for _, prefix := range legacy {
+		for _, e := range env {
+			if len(e) >= len(prefix) && e[:len(prefix)] == prefix {
+				t.Errorf("env must not contain legacy key %q -- use AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY", prefix)
+			}
+		}
+	}
+}
+
 func TestEnv_CredentialsMappedCorrectly(t *testing.T) {
 	p := &TerraformProviderAWS{creds: Credentials{
-		AccessKey:       "AKIAIOSFODNN7EXAMPLE",
-		AccessSecretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
+		SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 	}}
 	env := p.env()
 
@@ -664,8 +675,8 @@ func TestRender_ComputeTFTemplate(t *testing.T) {
 // -- Benchmarks --------------------------------------------------------------
 
 func BenchmarkNew(b *testing.B) {
-	b.Setenv("AWS_ACCESS_KEY", "test-key")
-	b.Setenv("AWS_ACCESS_SECRET_KEY", "test-secret")
+	b.Setenv("AWS_ACCESS_KEY_ID", "test-key-id")
+	b.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		New()
@@ -768,7 +779,6 @@ func BenchmarkRenderHCL(b *testing.B) {
 
 // -- helpers -----------------------------------------------------------------
 
-// containsStr returns true if substr appears within s.
 func containsStr(s, substr string) bool {
 	if len(substr) == 0 {
 		return true

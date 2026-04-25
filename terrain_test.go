@@ -385,6 +385,241 @@ func TestProvisionPlanet_LedgerRecordsProvisionComplete(t *testing.T) {
 		"provisionPlanet ledger records provision complete")
 }
 
+// -- resumeOrProvision -------------------------------------------------------
+
+// TestResumeOrProvision_AlreadyCompleted verifies that a planet with a
+// KindCollectComplete ledger entry is marked Done and skipped entirely.
+func TestResumeOrProvision_AlreadyCompleted(t *testing.T) {
+	mock := newMockProvider()
+	s := testSovereignWithMockProvider(t, mock)
+	planet := testPlanet(1)
+
+	// Simulate a completed planet by appending the ledger event directly.
+	s.ledger.Append(events.Event{Kind: events.KindCollectComplete, PlanetID: 1})
+
+	err := s.resumeOrProvision(planet)
+
+	requireNoError(t, err, "resumeOrProvision completed planet is not an error")
+	requireEqual(t, planet.Status, PlanetStatusDone,
+		"resumeOrProvision sets PlanetStatusDone for completed planet")
+
+	// The mock provider should not have been called at all.
+	mock.mu.Lock()
+	calls := mock.applyCalls + mock.initCalls + mock.outputCalls
+	mock.mu.Unlock()
+	requireEqual(t, calls, 0,
+		"resumeOrProvision completed planet does not call provider")
+}
+
+// TestResumeOrProvision_AlreadyProvisioned verifies that a planet with a
+// KindProvisionComplete ledger entry hydrates from provider state rather
+// than re-provisioning.
+func TestResumeOrProvision_AlreadyProvisioned(t *testing.T) {
+	mock := newMockProvider()
+	mock.stateResult = &tfprovider.ProviderState{
+		Status:     tfprovider.LifecycleApplied,
+		InstanceID: "i-resumed001",
+		PublicIPv4: "54.9.9.1",
+	}
+	s := testSovereignWithMockProvider(t, mock)
+	planet := testPlanet(1)
+
+	s.ledger.Append(events.Event{Kind: events.KindProvisionComplete, PlanetID: 1})
+
+	err := s.resumeOrProvision(planet)
+
+	requireNoError(t, err, "resumeOrProvision provisioned planet resumes cleanly")
+	requireEqual(t, planet.Status, PlanetStatusRunning,
+		"resumeOrProvision provisioned planet is running")
+	requireEqual(t, planet.InstanceID, "i-resumed001",
+		"resumeOrProvision provisioned planet hydrates InstanceID")
+	requireEqual(t, planet.PublicIPv4, "54.9.9.1",
+		"resumeOrProvision provisioned planet hydrates PublicIPv4")
+
+	// init and apply must not have been called.
+	mock.mu.Lock()
+	initCalls := mock.initCalls
+	applyCalls := mock.applyCalls
+	mock.mu.Unlock()
+	requireEqual(t, initCalls, 0,
+		"resumeOrProvision provisioned planet does not call Init")
+	requireEqual(t, applyCalls, 0,
+		"resumeOrProvision provisioned planet does not call Apply")
+}
+
+// TestResumeOrProvision_AlreadyProvisioned_MissingProviderState verifies
+// that a planet marked provisioned in the ledger but with no provider
+// state file on disk returns an error rather than silently proceeding.
+func TestResumeOrProvision_AlreadyProvisioned_MissingProviderState(t *testing.T) {
+	mock := newMockProvider()
+	mock.stateResult = nil
+	s := testSovereignWithMockProvider(t, mock)
+	planet := testPlanet(1)
+
+	s.ledger.Append(events.Event{Kind: events.KindProvisionComplete, PlanetID: 1})
+
+	err := s.resumeOrProvision(planet)
+
+	requireError(t, err, "resumeOrProvision provisioned but missing state returns error")
+}
+
+// TestResumeOrProvision_InterruptedApply verifies that a planet in
+// LifecycleApplying state re-runs apply rather than starting fresh.
+func TestResumeOrProvision_InterruptedApply(t *testing.T) {
+	mock := newMockProvider()
+	mock.stateResult = &tfprovider.ProviderState{
+		Status: tfprovider.LifecycleApplying,
+	}
+	s := testSovereignWithMockProvider(t, mock)
+	planet := testPlanet(1)
+
+	err := s.resumeOrProvision(planet)
+
+	requireNoError(t, err, "resumeOrProvision interrupted apply succeeds")
+	requireEqual(t, planet.Status, PlanetStatusRunning,
+		"resumeOrProvision interrupted apply reaches running")
+
+	// apply must have been called; init must not have been.
+	mock.mu.Lock()
+	applyCalls := mock.applyCalls
+	initCalls := mock.initCalls
+	mock.mu.Unlock()
+	requireEqual(t, applyCalls, 1,
+		"resumeOrProvision interrupted apply calls Apply once")
+	requireEqual(t, initCalls, 0,
+		"resumeOrProvision interrupted apply does not call Init")
+}
+
+// TestResumeOrProvision_InterruptedState verifies that LifecycleInterrupted
+// also re-runs apply.
+func TestResumeOrProvision_InterruptedState(t *testing.T) {
+	mock := newMockProvider()
+	mock.stateResult = &tfprovider.ProviderState{
+		Status: tfprovider.LifecycleInterrupted,
+	}
+	s := testSovereignWithMockProvider(t, mock)
+	planet := testPlanet(1)
+
+	err := s.resumeOrProvision(planet)
+
+	requireNoError(t, err, "resumeOrProvision interrupted state succeeds")
+
+	mock.mu.Lock()
+	applyCalls := mock.applyCalls
+	mock.mu.Unlock()
+	requireEqual(t, applyCalls, 1,
+		"resumeOrProvision LifecycleInterrupted calls Apply")
+}
+
+// TestResumeOrProvision_Initialized verifies that a planet in
+// LifecycleInitialized state skips init and runs apply.
+func TestResumeOrProvision_Initialized(t *testing.T) {
+	mock := newMockProvider()
+	mock.stateResult = &tfprovider.ProviderState{
+		Status: tfprovider.LifecycleInitialized,
+	}
+	s := testSovereignWithMockProvider(t, mock)
+	planet := testPlanet(1)
+
+	err := s.resumeOrProvision(planet)
+
+	requireNoError(t, err, "resumeOrProvision initialized state succeeds")
+
+	mock.mu.Lock()
+	initCalls := mock.initCalls
+	applyCalls := mock.applyCalls
+	mock.mu.Unlock()
+	requireEqual(t, initCalls, 0,
+		"resumeOrProvision initialized skips Init")
+	requireEqual(t, applyCalls, 1,
+		"resumeOrProvision initialized calls Apply")
+}
+
+// TestResumeOrProvision_AlreadyApplied verifies that a planet in
+// LifecycleApplied state hydrates from the provider state without
+// calling init or apply.
+func TestResumeOrProvision_AlreadyApplied(t *testing.T) {
+	mock := newMockProvider()
+	mock.stateResult = &tfprovider.ProviderState{
+		Status:     tfprovider.LifecycleApplied,
+		InstanceID: "i-applied001",
+		PublicIPv4: "54.8.8.1",
+	}
+	s := testSovereignWithMockProvider(t, mock)
+	planet := testPlanet(1)
+
+	err := s.resumeOrProvision(planet)
+
+	requireNoError(t, err, "resumeOrProvision applied state succeeds")
+	requireEqual(t, planet.InstanceID, "i-applied001",
+		"resumeOrProvision applied hydrates InstanceID")
+	requireEqual(t, planet.PublicIPv4, "54.8.8.1",
+		"resumeOrProvision applied hydrates PublicIPv4")
+
+	mock.mu.Lock()
+	initCalls := mock.initCalls
+	applyCalls := mock.applyCalls
+	mock.mu.Unlock()
+	requireEqual(t, initCalls, 0, "resumeOrProvision applied does not call Init")
+	requireEqual(t, applyCalls, 0, "resumeOrProvision applied does not call Apply")
+}
+
+// TestResumeOrProvision_FreshPlanet verifies that a planet with no
+// ledger history and no provider state provisions from scratch.
+func TestResumeOrProvision_FreshPlanet(t *testing.T) {
+	mock := newMockProvider()
+	s := testSovereignWithMockProvider(t, mock)
+	planet := testPlanet(1)
+
+	err := s.resumeOrProvision(planet)
+
+	requireNoError(t, err, "resumeOrProvision fresh planet succeeds")
+	requireEqual(t, planet.Status, PlanetStatusRunning,
+		"resumeOrProvision fresh planet reaches running")
+
+	mock.mu.Lock()
+	initCalls := mock.initCalls
+	applyCalls := mock.applyCalls
+	mock.mu.Unlock()
+	requireTrue(t, initCalls > 0, "resumeOrProvision fresh planet calls Init")
+	requireTrue(t, applyCalls > 0, "resumeOrProvision fresh planet calls Apply")
+}
+
+// TestResumeOrProvision_InterruptedApply_EmitsRunInterrupted verifies
+// that the KindRunInterrupted event is emitted when resuming an
+// interrupted apply.
+func TestResumeOrProvision_InterruptedApply_EmitsRunInterrupted(t *testing.T) {
+	mock := newMockProvider()
+	mock.stateResult = &tfprovider.ProviderState{
+		Status: tfprovider.LifecycleApplying,
+	}
+	s := testSovereignWithMockProvider(t, mock)
+	planet := testPlanet(1)
+
+	var received []events.EventKind
+	var mu sync.Mutex
+	s.bus.Subscribe(func(e events.Event) {
+		if e.PlanetID == planet.ID {
+			mu.Lock()
+			received = append(received, e.Kind)
+			mu.Unlock()
+		}
+	})
+
+	s.resumeOrProvision(planet)
+
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, k := range received {
+		if k == events.KindRunInterrupted {
+			found = true
+			break
+		}
+	}
+	requireTrue(t, found, "resumeOrProvision interrupted emits KindRunInterrupted")
+}
+
 // -- destroyPlanet -----------------------------------------------------------
 
 func TestDestroyPlanet_Success(t *testing.T) {
@@ -491,6 +726,77 @@ func TestProvisionTerrain_MultiplePlanets(t *testing.T) {
 	}
 }
 
+// TestProvisionTerrain_ContextCancellation verifies that cancelling the
+// context while the semaphore is full does not leave goroutines stranded
+// and that provisionTerrain returns promptly.
+func TestProvisionTerrain_ContextCancellation(t *testing.T) {
+	mock := newMockProvider()
+	// Block apply indefinitely so goroutines hold the semaphore slots.
+	blocked := make(chan struct{})
+	mock.applyErr = nil
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	s := testSovereign(t)
+	s.ctx = ctx
+	s.provider = mock
+	s.cfg.Planets = 5
+	s.cfg.Regions = []string{testRegion}
+	s.planets = s.initPlanets()
+
+	// Apply blocks until we cancel.
+	origApply := mock.applyErr
+	_ = origApply
+	applyStarted := make(chan struct{}, 10)
+
+	// Replace the mock's Apply with one that signals and then blocks.
+	blockingMock := &blockingMockProvider{
+		MockTerraformProvider: mock,
+		applyStarted:          applyStarted,
+		blocked:               blocked,
+	}
+	s.provider = blockingMock
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.provisionTerrain()
+	}()
+
+	// Wait for at least one apply to start, then cancel.
+	select {
+	case <-applyStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for apply to start")
+	}
+	cancel()
+	close(blocked)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provisionTerrain did not return after context cancellation")
+	}
+}
+
+// blockingMockProvider wraps MockTerraformProvider with a blocking Apply.
+type blockingMockProvider struct {
+	*MockTerraformProvider
+	applyStarted chan struct{}
+	blocked      chan struct{}
+}
+
+func (b *blockingMockProvider) Apply(ctx context.Context, spec tfprovider.PlanetSpec) error {
+	select {
+	case b.applyStarted <- struct{}{}:
+	default:
+	}
+	select {
+	case <-b.blocked:
+	case <-ctx.Done():
+	}
+	return ctx.Err()
+}
+
 // -- destroyTerrain ----------------------------------------------------------
 
 func TestDestroyTerrain_AllPlanets(t *testing.T) {
@@ -512,15 +818,30 @@ func TestDestroyTerrain_AllPlanets(t *testing.T) {
 		"destroyTerrain calls destroy for each planet")
 }
 
+// TestDestroyTerrain_SkipsNeverProvisioned verifies that a planet with
+// no InstanceID is skipped regardless of its Status. Previously a lost
+// planet with Status==PlanetStatusLost&&InstanceID=="" was the check;
+// the correct check is InstanceID=="" alone.
 func TestDestroyTerrain_SkipsNeverProvisioned(t *testing.T) {
 	mock := newMockProvider()
 	s := testSovereignWithMockProvider(t, mock)
-	lost := testLostPlanet(1)
-	lost.InstanceID = ""
+
+	// Lost planet with no InstanceID -- never provisioned.
+	neverProvisioned := testLostPlanet(1)
+	neverProvisioned.InstanceID = ""
+
+	// Pending planet with no InstanceID -- also skipped.
+	pending := testPlanet(2)
+
+	// Lost planet WITH an InstanceID -- was provisioned, must be destroyed.
+	lostButProvisioned := testLostPlanet(3)
+	lostButProvisioned.InstanceID = "i-was-running-but-lost"
 
 	s.planets = []*Planet{
-		lost,
-		testProvisionedPlanet(2),
+		neverProvisioned,
+		pending,
+		lostButProvisioned,
+		testProvisionedPlanet(4),
 	}
 
 	err := s.destroyTerrain()
@@ -529,8 +850,8 @@ func TestDestroyTerrain_SkipsNeverProvisioned(t *testing.T) {
 	mock.mu.Lock()
 	calls := mock.destroyCalls
 	mock.mu.Unlock()
-	requireEqual(t, calls, 1,
-		"destroyTerrain only destroys provisioned planet")
+	requireEqual(t, calls, 2,
+		"destroyTerrain destroys lostButProvisioned and running planet, skips the rest")
 }
 
 // -- Benchmarks --------------------------------------------------------------

@@ -13,21 +13,17 @@ import (
 
 // -- percentile --------------------------------------------------------------
 
-// TestPercentile_EmptySlice verifies that an empty slice returns zero.
 func TestPercentile_EmptySlice(t *testing.T) {
 	got := percentile([]time.Duration{}, 50)
 	requireEqual(t, got, time.Duration(0), "percentile empty slice")
 }
 
-// TestPercentile_SingleElement verifies that a single-element slice
-// returns that element for any percentile.
 func TestPercentile_SingleElement(t *testing.T) {
 	d := 100 * time.Millisecond
 	got := percentile([]time.Duration{d}, 99)
 	requireEqual(t, got, d, "percentile single element")
 }
 
-// TestPercentile_P50 verifies the median of a sorted slice.
 func TestPercentile_P50(t *testing.T) {
 	sorted := []time.Duration{
 		10 * time.Millisecond,
@@ -40,8 +36,6 @@ func TestPercentile_P50(t *testing.T) {
 	requireEqual(t, got, 30*time.Millisecond, "percentile p50")
 }
 
-// TestPercentile_P99 verifies the 99th percentile returns a value
-// near the end of the sorted slice.
 func TestPercentile_P99(t *testing.T) {
 	sorted := make([]time.Duration, 100)
 	for i := range sorted {
@@ -53,27 +47,21 @@ func TestPercentile_P99(t *testing.T) {
 
 // -- domainFromURL -----------------------------------------------------------
 
-// TestDomainFromURL_HTTPS verifies that the https scheme is stripped.
 func TestDomainFromURL_HTTPS(t *testing.T) {
 	got := domainFromURL("https://example.com/path")
 	requireEqual(t, got, "example.com", "domainFromURL https")
 }
 
-// TestDomainFromURL_HTTP verifies that the http scheme is stripped.
 func TestDomainFromURL_HTTP(t *testing.T) {
 	got := domainFromURL("http://localhost:8080/")
 	requireEqual(t, got, "localhost-8080", "domainFromURL http with port")
 }
 
-// TestDomainFromURL_EmptyString verifies that an empty string
-// returns an empty string without panicking.
 func TestDomainFromURL_EmptyString(t *testing.T) {
 	got := domainFromURL("")
 	requireEqual(t, got, "", "domainFromURL empty string")
 }
 
-// TestDomainFromURL_PortReplacedWithDash verifies that colons in
-// the host are replaced with dashes for filesystem safety.
 func TestDomainFromURL_PortReplacedWithDash(t *testing.T) {
 	got := domainFromURL("http://myapp.com:9090/")
 	requireEqual(t, got, "myapp.com-9090", "domainFromURL port replaced")
@@ -81,31 +69,26 @@ func TestDomainFromURL_PortReplacedWithDash(t *testing.T) {
 
 // -- formatBytes -------------------------------------------------------------
 
-// TestFormatBytes_Bytes verifies formatting of values under 1KB.
 func TestFormatBytes_Bytes(t *testing.T) {
 	got := formatBytes(500)
 	requireEqual(t, got, "500 B", "formatBytes bytes")
 }
 
-// TestFormatBytes_Kilobytes verifies formatting of KB values.
 func TestFormatBytes_Kilobytes(t *testing.T) {
 	got := formatBytes(2048)
 	requireEqual(t, got, "2.00 KB", "formatBytes kilobytes")
 }
 
-// TestFormatBytes_Megabytes verifies formatting of MB values.
 func TestFormatBytes_Megabytes(t *testing.T) {
 	got := formatBytes(1048576)
 	requireEqual(t, got, "1.00 MB", "formatBytes megabytes")
 }
 
-// TestFormatBytes_Gigabytes verifies formatting of GB values.
 func TestFormatBytes_Gigabytes(t *testing.T) {
 	got := formatBytes(1073741824)
 	requireEqual(t, got, "1.00 GB", "formatBytes gigabytes")
 }
 
-// TestFormatBytes_Zero verifies that zero bytes formats correctly.
 func TestFormatBytes_Zero(t *testing.T) {
 	got := formatBytes(0)
 	requireEqual(t, got, "0 B", "formatBytes zero")
@@ -113,8 +96,6 @@ func TestFormatBytes_Zero(t *testing.T) {
 
 // -- renderUnifiedMarkdown ---------------------------------------------------
 
-// TestRenderUnifiedMarkdown_NonEmpty verifies that the markdown
-// renderer returns a non-empty string.
 func TestRenderUnifiedMarkdown_NonEmpty(t *testing.T) {
 	unified := testUnifiedReport(t)
 	md, err := renderUnifiedMarkdown(unified)
@@ -122,8 +103,6 @@ func TestRenderUnifiedMarkdown_NonEmpty(t *testing.T) {
 	requireTrue(t, len(md) > 0, "renderUnifiedMarkdown non-empty string")
 }
 
-// TestRenderUnifiedMarkdown_ContainsVersion verifies that the version
-// appears in the rendered markdown.
 func TestRenderUnifiedMarkdown_ContainsVersion(t *testing.T) {
 	unified := testUnifiedReport(t)
 	md, err := renderUnifiedMarkdown(unified)
@@ -132,8 +111,6 @@ func TestRenderUnifiedMarkdown_ContainsVersion(t *testing.T) {
 		"renderUnifiedMarkdown contains version string")
 }
 
-// TestRenderUnifiedMarkdown_ContainsTarget verifies that the target
-// URL appears in the rendered markdown.
 func TestRenderUnifiedMarkdown_ContainsTarget(t *testing.T) {
 	unified := testUnifiedReport(t)
 	md, err := renderUnifiedMarkdown(unified)
@@ -144,8 +121,6 @@ func TestRenderUnifiedMarkdown_ContainsTarget(t *testing.T) {
 
 // -- renderUnifiedHTML -------------------------------------------------------
 
-// TestRenderUnifiedHTML_NonEmpty verifies that the HTML renderer
-// returns a non-empty string.
 func TestRenderUnifiedHTML_NonEmpty(t *testing.T) {
 	unified := testUnifiedReport(t)
 	html, err := renderUnifiedHTML(unified)
@@ -153,8 +128,6 @@ func TestRenderUnifiedHTML_NonEmpty(t *testing.T) {
 	requireTrue(t, len(html) > 0, "renderUnifiedHTML non-empty string")
 }
 
-// TestRenderUnifiedHTML_IsHTML verifies that the output begins with
-// a DOCTYPE declaration.
 func TestRenderUnifiedHTML_IsHTML(t *testing.T) {
 	unified := testUnifiedReport(t)
 	html, err := renderUnifiedHTML(unified)
@@ -163,8 +136,6 @@ func TestRenderUnifiedHTML_IsHTML(t *testing.T) {
 		"renderUnifiedHTML starts with DOCTYPE")
 }
 
-// TestRenderUnifiedHTML_ContainsVersion verifies the version appears
-// in the rendered HTML.
 func TestRenderUnifiedHTML_ContainsVersion(t *testing.T) {
 	unified := testUnifiedReport(t)
 	html, err := renderUnifiedHTML(unified)
@@ -173,10 +144,42 @@ func TestRenderUnifiedHTML_ContainsVersion(t *testing.T) {
 		"renderUnifiedHTML contains version")
 }
 
+// TestRenderUnifiedHTML_EscapesUserContent verifies that the html/template
+// renderer escapes content that would be dangerous in raw fmt.Sprintf output.
+// A target URL containing angle brackets must be escaped, not injected as
+// raw HTML.
+func TestRenderUnifiedHTML_EscapesUserContent(t *testing.T) {
+	unified := testUnifiedReport(t)
+	unified.Config.Hit = `http://example.com/<script>alert(1)</script>`
+
+	html, err := renderUnifiedHTML(unified)
+	requireNoError(t, err, "renderUnifiedHTML escapes user content")
+	requireFalse(t, strings.Contains(html, "<script>alert(1)</script>"),
+		"renderUnifiedHTML must not emit raw script tag from user content")
+	requireTrue(t, strings.Contains(html, "&lt;script&gt;"),
+		"renderUnifiedHTML HTML-escapes angle brackets from user content")
+}
+
+// TestRenderUnifiedHTML_EscapesInstanceID verifies that instance IDs
+// containing special characters are escaped.
+func TestRenderUnifiedHTML_EscapesInstanceID(t *testing.T) {
+	unified := testUnifiedReport(t)
+	unified.LostPlanets = []*Planet{
+		{
+			ID:         99,
+			Region:     "us-east-1",
+			InstanceID: `i-<dangerous>"value"`,
+		},
+	}
+
+	html, err := renderUnifiedHTML(unified)
+	requireNoError(t, err, "renderUnifiedHTML escapes instance ID")
+	requireFalse(t, strings.Contains(html, `i-<dangerous>`),
+		"renderUnifiedHTML must not emit raw angle brackets in instance ID")
+}
+
 // -- readPlanetReport --------------------------------------------------------
 
-// TestReadPlanetReport_ValidReport verifies that a well-formed lemmings
-// report file is parsed correctly.
 func TestReadPlanetReport_ValidReport(t *testing.T) {
 	s := testSovereign(t)
 	planet := testDonePlanet(t, 1)
@@ -189,8 +192,6 @@ func TestReadPlanetReport_ValidReport(t *testing.T) {
 		"readPlanetReport TotalVisits populated")
 }
 
-// TestReadPlanetReport_EmptyReportPath verifies that an empty
-// ReportPath returns an error.
 func TestReadPlanetReport_EmptyReportPath(t *testing.T) {
 	s := testSovereign(t)
 	planet := testDonePlanet(t, 1)
@@ -200,8 +201,6 @@ func TestReadPlanetReport_EmptyReportPath(t *testing.T) {
 	requireError(t, err, "readPlanetReport empty report path")
 }
 
-// TestReadPlanetReport_NoReportFile verifies that a directory with
-// no lemmings report file returns an error.
 func TestReadPlanetReport_NoReportFile(t *testing.T) {
 	s := testSovereign(t)
 	planet := testDonePlanet(t, 1)
@@ -210,10 +209,92 @@ func TestReadPlanetReport_NoReportFile(t *testing.T) {
 	requireError(t, err, "readPlanetReport no report file")
 }
 
+// -- deliverReport -----------------------------------------------------------
+
+// TestDeliverReport_LocalDestination verifies that deliverReport writes
+// both .md and .html files to a local directory destination.
+func TestDeliverReport_LocalDestination(t *testing.T) {
+	dest := t.TempDir()
+	s := testSovereign(t)
+	s.cfg.SaveTo = []string{dest}
+
+	unified := testUnifiedReport(t)
+	err := s.deliverReport(unified)
+	requireNoError(t, err, "deliverReport local destination")
+
+	entries, err := os.ReadDir(dest)
+	requireNoError(t, err, "read dest directory")
+	requireTrue(t, len(entries) == 2, "deliverReport writes two files")
+
+	var hasMD, hasHTML bool
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".md") {
+			hasMD = true
+		}
+		if strings.HasSuffix(e.Name(), ".html") {
+			hasHTML = true
+		}
+	}
+	requireTrue(t, hasMD, "deliverReport writes markdown file")
+	requireTrue(t, hasHTML, "deliverReport writes html file")
+}
+
+// TestDeliverReport_InvalidDestinationLogsWarning verifies that an
+// unrecognised save-to destination logs a warning but does not return
+// an error, so a bad destination does not abort delivery to valid ones.
+func TestDeliverReport_InvalidDestinationLogsWarning(t *testing.T) {
+	goodDest := t.TempDir()
+	s := testSovereign(t)
+	// unsupported scheme that passes validation (scheme check is in validate,
+	// construction-time error in deliverer.New)
+	s.cfg.SaveTo = []string{"badscheme://somewhere", goodDest}
+
+	unified := testUnifiedReport(t)
+	err := s.deliverReport(unified)
+
+	// deliverReport never returns an error for individual delivery failures.
+	requireNoError(t, err, "deliverReport bad destination does not abort")
+
+	// The good destination should still have received the report.
+	entries, readErr := os.ReadDir(goodDest)
+	requireNoError(t, readErr, "read good dest directory")
+	requireTrue(t, len(entries) == 2,
+		"deliverReport delivers to good destination even when one destination fails")
+}
+
+// TestDeliverReport_MultipleDestinations verifies that deliverReport
+// delivers to all configured destinations.
+func TestDeliverReport_MultipleDestinations(t *testing.T) {
+	dest1 := t.TempDir()
+	dest2 := t.TempDir()
+	s := testSovereign(t)
+	s.cfg.SaveTo = []string{dest1, dest2}
+
+	unified := testUnifiedReport(t)
+	err := s.deliverReport(unified)
+	requireNoError(t, err, "deliverReport multiple destinations")
+
+	for _, dest := range []string{dest1, dest2} {
+		entries, err := os.ReadDir(dest)
+		requireNoError(t, err, "read dest directory")
+		requireTrue(t, len(entries) == 2,
+			"deliverReport delivers to each destination")
+	}
+}
+
+// TestDeliverReport_EmptyDestinationsIsNoop verifies that deliverReport
+// with no destinations does not error.
+func TestDeliverReport_EmptyDestinationsIsNoop(t *testing.T) {
+	s := testSovereign(t)
+	s.cfg.SaveTo = []string{}
+
+	unified := testUnifiedReport(t)
+	err := s.deliverReport(unified)
+	requireNoError(t, err, "deliverReport empty destinations is noop")
+}
+
 // -- LocalDeliverer ----------------------------------------------------------
 
-// TestLocalDeliverer_WritesMarkdownAndHTML verifies that Deliver
-// creates both .md and .html files in the destination directory.
 func TestLocalDeliverer_WritesMarkdownAndHTML(t *testing.T) {
 	dest := t.TempDir()
 	d, err := deliverer.New(dest, "", nil)
@@ -235,8 +316,6 @@ func TestLocalDeliverer_WritesMarkdownAndHTML(t *testing.T) {
 	}
 }
 
-// TestLocalDeliverer_ContentPreserved verifies that the file contents
-// match what was passed to Deliver.
 func TestLocalDeliverer_ContentPreserved(t *testing.T) {
 	dest := t.TempDir()
 	d, err := deliverer.New(dest, "", nil)
@@ -257,8 +336,6 @@ func TestLocalDeliverer_ContentPreserved(t *testing.T) {
 	requireEqual(t, string(htmlData), html, "html content matches")
 }
 
-// TestLocalDeliverer_CreatesDestDirectory verifies that Deliver
-// creates the destination directory if it does not exist.
 func TestLocalDeliverer_CreatesDestDirectory(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "nested", "report", "dir")
 	d, err := deliverer.New(dest, "", nil)
@@ -272,9 +349,61 @@ func TestLocalDeliverer_CreatesDestDirectory(t *testing.T) {
 	}
 }
 
+// -- validateSaveToDestination -----------------------------------------------
+
+func TestValidateSaveToDestination_SupportedSchemes(t *testing.T) {
+	supported := []string{
+		"s3://my-bucket/reports",
+		"ssh://rocky@1.2.3.4:/reports",
+		"ftp://ftpserver.example.com/reports",
+		"file:///tmp/reports",
+		"/tmp/reports",
+		"./reports",
+		".",
+	}
+	for _, dest := range supported {
+		err := validateSaveToDestination(dest)
+		requireNoError(t, err, "validateSaveToDestination should accept "+dest)
+	}
+}
+
+func TestValidateSaveToDestination_UnsupportedScheme(t *testing.T) {
+	unsupported := []string{
+		"gopher://old.server.com/reports",
+		"smb://fileserver/share",
+		"rsync://backup.server.com/path",
+	}
+	for _, dest := range unsupported {
+		err := validateSaveToDestination(dest)
+		requireError(t, err, "validateSaveToDestination should reject "+dest)
+	}
+}
+
+// -- validateConfig save-to --------------------------------------------------
+
+func TestValidateConfig_FTPDestinationAccepted(t *testing.T) {
+	cfg := testConfig()
+	cfg.SaveTo = []string{"ftp://ftpserver.example.com/reports"}
+	err := validateConfig(&cfg)
+	requireNoError(t, err, "validateConfig accepts ftp:// save-to")
+}
+
+func TestValidateConfig_HTTPHitInvalidScheme(t *testing.T) {
+	cfg := testConfig()
+	cfg.Hit = "httpevil://malicious.com"
+	err := validateConfig(&cfg)
+	requireError(t, err, "validateConfig rejects non-http/https scheme in hit URL")
+}
+
+func TestValidateConfig_HitWithNoHost(t *testing.T) {
+	cfg := testConfig()
+	cfg.Hit = "http://"
+	err := validateConfig(&cfg)
+	requireError(t, err, "validateConfig rejects hit URL with empty host")
+}
+
 // -- Benchmarks --------------------------------------------------------------
 
-// BenchmarkRenderUnifiedMarkdown measures markdown rendering throughput.
 func BenchmarkRenderUnifiedMarkdown(b *testing.B) {
 	unified := testUnifiedReport(nil)
 	b.ResetTimer()
@@ -283,7 +412,6 @@ func BenchmarkRenderUnifiedMarkdown(b *testing.B) {
 	}
 }
 
-// BenchmarkRenderUnifiedHTML measures HTML rendering throughput.
 func BenchmarkRenderUnifiedHTML(b *testing.B) {
 	unified := testUnifiedReport(nil)
 	b.ResetTimer()
@@ -294,8 +422,6 @@ func BenchmarkRenderUnifiedHTML(b *testing.B) {
 
 // -- helpers -----------------------------------------------------------------
 
-// testUnifiedReport builds a minimal UnifiedReport for render tests.
-// t may be nil for benchmark use where no temp dirs are needed.
 func testUnifiedReport(t *testing.T) *UnifiedReport {
 	cfg := SovereignConfig{
 		Hit:     testHit,
@@ -345,9 +471,6 @@ func testUnifiedReport(t *testing.T) *UnifiedReport {
 	}
 }
 
-// TestAggregateReport_BytesAccumulatesNumerically verifies that bytes
-// across multiple paths accumulate as integers not strings. This is a
-// regression test for the GlobalPathReport.Bytes string-concatenation bug.
 func TestAggregateReport_BytesAccumulatesNumerically(t *testing.T) {
 	s := testSovereign(t)
 

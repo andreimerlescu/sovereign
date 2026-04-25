@@ -19,25 +19,15 @@ import (
 // -- Constants ----------------------------------------------------------------
 
 const (
-	// testVersion is the sovereign Version() used in tests.
-	testVersion = "test"
-
-	// testHit is the default target URL used in tests.
-	testHit = "http://localhost:8080/"
-
-	// testRegion is the default AWS region used in tests.
-	testRegion = "us-east-1"
-
-	// testInstanceType is the default AWS instance type used in tests.
+	testVersion      = "test"
+	testHit          = "http://localhost:8080/"
+	testRegion       = "us-east-1"
 	testInstanceType = "t3.medium"
-
-	// testZone is the default AWS availability zone used in tests.
-	testZone = "us-east-1a"
+	testZone         = "us-east-1a"
 )
 
 // -- Test config helpers ------------------------------------------------------
 
-// testConfig returns a minimal valid SovereignConfig for use in tests.
 func testConfig() SovereignConfig {
 	return SovereignConfig{
 		Hit:              testHit,
@@ -70,7 +60,6 @@ func testConfig() SovereignConfig {
 
 // -- Planet helpers -----------------------------------------------------------
 
-// testPlanet returns a Planet in PlanetStatusPending for use in tests.
 func testPlanet(id int) *Planet {
 	return &Planet{
 		ID:           id,
@@ -81,8 +70,6 @@ func testPlanet(id int) *Planet {
 	}
 }
 
-// testProvisionedPlanet returns a Planet in PlanetStatusRunning
-// with PublicIPv4 and InstanceID populated.
 func testProvisionedPlanet(id int) *Planet {
 	return &Planet{
 		ID:            id,
@@ -96,8 +83,6 @@ func testProvisionedPlanet(id int) *Planet {
 	}
 }
 
-// testDonePlanet returns a Planet in PlanetStatusDone with a
-// ReportPath pointing to a temp directory.
 func testDonePlanet(t *testing.T, id int) *Planet {
 	t.Helper()
 	dir := t.TempDir()
@@ -115,7 +100,6 @@ func testDonePlanet(t *testing.T, id int) *Planet {
 	}
 }
 
-// testLostPlanet returns a Planet in PlanetStatusLost.
 func testLostPlanet(id int) *Planet {
 	return &Planet{
 		ID:           id,
@@ -129,10 +113,6 @@ func testLostPlanet(id int) *Planet {
 
 // -- Sovereign helpers --------------------------------------------------------
 
-// testSovereign constructs a Sovereign with a test config, a temp
-// directory for state, an initialized event bus, a ledger wired as
-// a bus subscriber, and a MockCommander injected for all subprocess
-// calls.
 func testSovereign(t *testing.T) *Sovereign {
 	t.Helper()
 	cfg := testConfig()
@@ -172,8 +152,6 @@ func testSovereign(t *testing.T) *Sovereign {
 	return s
 }
 
-// testSovereignWithPlanets constructs a Sovereign with the provided
-// planets already populated.
 func testSovereignWithPlanets(t *testing.T, planets []*Planet) *Sovereign {
 	t.Helper()
 	s := testSovereign(t)
@@ -186,18 +164,18 @@ func testSovereignWithPlanets(t *testing.T, planets []*Planet) *Sovereign {
 
 // setTestEnv sets required sovereign environment variables using
 // t.Setenv so they are automatically restored after each test.
+// Variable names match the standard AWS SDK convention so operators
+// with existing AWS tooling do not need additional configuration.
 func setTestEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("AWS_ACCESS_KEY", "test-aws-access-key")
-	t.Setenv("AWS_ACCESS_SECRET_KEY", "test-aws-secret-key")
+	t.Setenv("AWS_ACCESS_KEY_ID", "test-aws-access-key-id")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-aws-secret-access-key")
 	t.Setenv("SOVEREIGN_SUBNET_ID", "subnet-0test00000000000")
 	t.Setenv("SOVEREIGN_SECURITY_GROUP", "sg-0test000000000000")
 }
 
 // -- Pricing mock server ------------------------------------------------------
 
-// newMockPricingJSONServer starts an httptest.Server that returns a
-// fixed pricing JSON response for any instance type and region.
 func newMockPricingJSONServer(tb testing.TB, hourlyRateDollars float64) *httptest.Server {
 	tb.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -221,8 +199,6 @@ func newMockPricingJSONServer(tb testing.TB, hourlyRateDollars float64) *httptes
 	return srv
 }
 
-// newMockPricingJSONServerError starts an httptest.Server that returns
-// HTTP 500 for all requests.
 func newMockPricingJSONServerError(tb testing.TB) *httptest.Server {
 	tb.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -234,8 +210,6 @@ func newMockPricingJSONServerError(tb testing.TB) *httptest.Server {
 
 // -- Report file helpers ------------------------------------------------------
 
-// writeMockLemmingsReport writes a minimal lemmings YAML report file
-// into dir so that readPlanetReport has something to parse.
 func writeMockLemmingsReport(t *testing.T, dir string, planetID int) string {
 	t.Helper()
 	domain := "localhost-8080"
@@ -293,7 +267,6 @@ Paths:
 
 // -- State file helpers -------------------------------------------------------
 
-// testStateFile returns a path to a temp state file.
 func testStateFile(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -302,7 +275,6 @@ func testStateFile(t *testing.T) string {
 
 // -- Assertion helpers --------------------------------------------------------
 
-// requireNoError fails the test immediately if err is non-nil.
 func requireNoError(t *testing.T, err error, msg string) {
 	t.Helper()
 	if err != nil {
@@ -310,7 +282,6 @@ func requireNoError(t *testing.T, err error, msg string) {
 	}
 }
 
-// requireError fails the test immediately if err is nil.
 func requireError(t *testing.T, err error, msg string) {
 	t.Helper()
 	if err == nil {
@@ -318,7 +289,6 @@ func requireError(t *testing.T, err error, msg string) {
 	}
 }
 
-// requireEqual fails the test if got != want.
 func requireEqual[T comparable](t *testing.T, got, want T, msg string) {
 	t.Helper()
 	if got != want {
@@ -326,7 +296,6 @@ func requireEqual[T comparable](t *testing.T, got, want T, msg string) {
 	}
 }
 
-// requireNotNil fails the test if v is nil.
 func requireNotNil(t *testing.T, v any, msg string) {
 	t.Helper()
 	if v == nil {
@@ -334,7 +303,6 @@ func requireNotNil(t *testing.T, v any, msg string) {
 	}
 }
 
-// requireTrue fails the test if condition is false.
 func requireTrue(t *testing.T, condition bool, msg string) {
 	t.Helper()
 	if !condition {
@@ -342,7 +310,6 @@ func requireTrue(t *testing.T, condition bool, msg string) {
 	}
 }
 
-// requireFalse fails the test if condition is true.
 func requireFalse(t *testing.T, condition bool, msg string) {
 	t.Helper()
 	if condition {
@@ -352,13 +319,10 @@ func requireFalse(t *testing.T, condition bool, msg string) {
 
 // -- Benchmark helpers --------------------------------------------------------
 
-// benchmarkSovereign constructs a Sovereign suitable for benchmark use.
-// out is set to io.Discard to suppress the per-iteration stdout noise
-// that would otherwise flood benchmark output.
 func benchmarkSovereign(b *testing.B) *Sovereign {
 	b.Helper()
 	cfg := testConfig()
-	cfg.Planets = 1 // benchmarks use 1 planet unless explicitly overridden
+	cfg.Planets = 1
 	ctx, cancel := context.WithCancel(context.Background())
 	b.Cleanup(cancel)
 

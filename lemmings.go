@@ -11,8 +11,18 @@ import (
 	"github.com/andreimerlescu/sovereign/pkg/events"
 )
 
+// ErrAllPlanetsLost is returned by runLemmings when every planet
+// was marked lost during execution, making collection and reporting
+// impossible. The caller should still attempt destroyTerrain to clean
+// up any instances that were provisioned before failure.
+var ErrAllPlanetsLost = fmt.Errorf("all planets lost during lemmings execution")
+
 // runLemmings deploys and executes lemmings on each planet concurrently.
 // Planets with status PlanetStatusLost are skipped.
+//
+// Returns ErrAllPlanetsLost when no planet survived execution. Individual
+// planet failures are logged as warnings but do not stop execution on
+// surviving planets.
 func (s *Sovereign) runLemmings() error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -41,7 +51,14 @@ func (s *Sovereign) runLemmings() error {
 		fmt.Fprintf(s.out, "  sovereign: warning: lemmings run error: %v\n", err)
 	}
 
-	return nil
+	// If every planet is now lost, report it so Run can abort cleanly
+	// rather than attempting collection on an empty set.
+	for _, p := range s.planets {
+		if p.Status != PlanetStatusLost {
+			return nil
+		}
+	}
+	return ErrAllPlanetsLost
 }
 
 // runLemmingsOnPlanet copies the plan file if configured and executes
@@ -79,14 +96,8 @@ func (s *Sovereign) runLemmingsOnPlanet(planet *Planet) error {
 	ctx, cancel := context.WithTimeout(s.ctx, deadline)
 	defer cancel()
 
-	_, _, err := s.cmd.Run(ctx, "", nil,
-		"ssh",
-		"-i", s.planetSSHKeyPath(planet),
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "ConnectTimeout=30",
-		fmt.Sprintf("%s@%s", planet.RemoteUser, planet.PublicIPv4),
-		s.buildLemmingsCommand(planet),
-	)
+	sshArgs := s.sshArgs(planet, s.buildLemmingsCommand(planet))
+	_, _, err := s.cmd.Run(ctx, "", nil, sshArgs[0], sshArgs[1:]...)
 	if err != nil {
 		planet.mu.Lock()
 		planet.Status = PlanetStatusLost
@@ -170,15 +181,12 @@ func (s *Sovereign) collectFromPlanet(planet *Planet) error {
 		return fmt.Errorf("planet %d: create report dir: %w", planet.ID, err)
 	}
 
-	_, _, err := s.cmd.Run(s.ctx, "", nil,
-		"scp",
-		"-i", s.planetSSHKeyPath(planet),
-		"-o", "StrictHostKeyChecking=no",
-		"-r",
-		fmt.Sprintf("%s@%s:~/lemmings/",
-			planet.RemoteUser, planet.PublicIPv4),
+	scpArgs := s.scpArgs(planet,
+		fmt.Sprintf("%s@%s:~/lemmings/", planet.RemoteUser, planet.PublicIPv4),
 		localDir,
+		true,
 	)
+	_, _, err := s.cmd.Run(s.ctx, "", nil, scpArgs[0], scpArgs[1:]...)
 	if err != nil {
 		planet.mu.Lock()
 		planet.Status = PlanetStatusLost
@@ -237,18 +245,58 @@ func (s *Sovereign) copyPlanFile(planet *Planet) error {
 	if s.cfg.Plan == "" {
 		return nil
 	}
-	_, _, err := s.cmd.Run(s.ctx, "", nil,
-		"scp",
-		"-i", s.planetSSHKeyPath(planet),
-		"-o", "StrictHostKeyChecking=no",
+	scpArgs := s.scpArgs(planet,
 		s.cfg.Plan,
 		fmt.Sprintf("%s@%s:/home/%s/lemmings.plan.yml",
 			planet.RemoteUser, planet.PublicIPv4, planet.RemoteUser),
+		false,
 	)
+	_, _, err := s.cmd.Run(s.ctx, "", nil, scpArgs[0], scpArgs[1:]...)
 	if err != nil {
 		return fmt.Errorf("scp plan file to planet %d: %w", planet.ID, err)
 	}
 	return nil
+}
+
+// sshArgs builds the argument slice for an SSH command to a planet.
+// The base args include StrictHostKeyChecking=no and ConnectTimeout=30.
+// Additional SSH options from s.cfg.SSHOptions are appended before the
+// remote command so callers can inject extra flags such as known-hosts
+// overrides or identity file options without modifying this function.
+func (s *Sovereign) sshArgs(planet *Planet, remoteCmd string) []string {
+	args := []string{
+		"ssh",
+		"-i", s.planetSSHKeyPath(planet),
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "ConnectTimeout=30",
+	}
+	for _, opt := range s.cfg.SSHOptions {
+		args = append(args, "-o", opt)
+	}
+	args = append(args,
+		fmt.Sprintf("%s@%s", planet.RemoteUser, planet.PublicIPv4),
+		remoteCmd,
+	)
+	return args
+}
+
+// scpArgs builds the argument slice for an SCP command to or from a planet.
+// recursive controls whether -r is passed (needed for directory transfers).
+// Additional SSH options from s.cfg.SSHOptions are passed via -o flags.
+func (s *Sovereign) scpArgs(planet *Planet, src, dst string, recursive bool) []string {
+	args := []string{
+		"scp",
+		"-i", s.planetSSHKeyPath(planet),
+		"-o", "StrictHostKeyChecking=no",
+	}
+	if recursive {
+		args = append(args, "-r")
+	}
+	for _, opt := range s.cfg.SSHOptions {
+		args = append(args, "-o", opt)
+	}
+	args = append(args, src, dst)
+	return args
 }
 
 // completedPlanets returns the subset of planets that reached

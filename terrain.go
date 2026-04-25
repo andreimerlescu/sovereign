@@ -14,6 +14,12 @@ import (
 // provisionTerrain provisions all planets using the configured provider.
 // The first planet is provisioned alone. Remaining planets are
 // provisioned concurrently in batches of 3.
+//
+// If the context is cancelled while goroutines are waiting to enter the
+// semaphore, each waiting goroutine will unblock and return without
+// starting work. Already-running planets are destroyed by the caller
+// via the abort path in Run.
+//
 // Lost planets are non-fatal -- the run continues with surviving planets.
 func (s *Sovereign) provisionTerrain() error {
 	if len(s.planets) == 0 {
@@ -36,8 +42,16 @@ func (s *Sovereign) provisionTerrain() error {
 
 	for _, planet := range remaining {
 		planet := planet
+
+		// Block on the semaphore but respect context cancellation so
+		// that a SIGINT does not leave goroutines stranded forever.
+		select {
+		case sem <- struct{}{}:
+		case <-s.ctx.Done():
+			break
+		}
+
 		wg.Add(1)
-		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -61,7 +75,6 @@ func (s *Sovereign) provisionTerrain() error {
 // whether a planet needs fresh provisioning or can resume from a
 // previous interrupted run.
 func (s *Sovereign) resumeOrProvision(planet *Planet) error {
-	// already completed in a previous run -- skip entirely
 	if s.ledger.PlanetCompleted(planet.ID) {
 		fmt.Fprintf(s.out, "  sovereign: planet %d already completed -- skipping\n", planet.ID)
 		planet.mu.Lock()
@@ -70,13 +83,11 @@ func (s *Sovereign) resumeOrProvision(planet *Planet) error {
 		return nil
 	}
 
-	// already provisioned -- hydrate from provider state and continue
 	if s.ledger.PlanetProvisioned(planet.ID) {
 		fmt.Fprintf(s.out, "  sovereign: planet %d already provisioned -- resuming\n", planet.ID)
 		return s.hydrateFromProviderState(planet)
 	}
 
-	// check provider state for partial progress
 	spec := s.planetSpec(planet)
 	state, err := s.provider.LoadState(spec)
 	if err != nil {
@@ -125,17 +136,14 @@ func (s *Sovereign) provisionPlanet(planet *Planet) error {
 		Region:   planet.Region,
 	})
 
-	// render HCL into planet work dir
 	if err := s.provider.RenderHCL(s.hclSpec(planet)); err != nil {
 		return s.markLost(planet, events.KindProvisionFailed, err)
 	}
 
 	spec := s.planetSpec(planet)
 
-	// save uninitialized state
 	s.saveProviderState(planet, tfprovider.LifecycleUninitialized, nil)
 
-	// terraform init
 	s.bus.Emit(events.Event{
 		Kind:     events.KindInitStart,
 		PlanetID: planet.ID,
@@ -161,6 +169,11 @@ func (s *Sovereign) provisionPlanet(planet *Planet) error {
 
 // applyAndHydrate runs terraform apply, reads output, and marks
 // the planet running.
+//
+// On apply failure the planet is marked lost with LifecycleInterrupted
+// so resume logic knows to retry apply rather than re-running init.
+// On output failure the planet is marked lost with LifecycleFailed
+// because the instance state is unknown.
 func (s *Sovereign) applyAndHydrate(planet *Planet) error {
 	spec := s.planetSpec(planet)
 
@@ -249,7 +262,14 @@ func (s *Sovereign) hydrateFromProviderState(planet *Planet) error {
 	return s.hydratePlanetFromState(planet, state)
 }
 
-// destroyTerrain destroys all provisioned planets concurrently.
+// destroyTerrain destroys all planets that have an InstanceID.
+// A planet with no InstanceID was never provisioned and has no
+// cloud resource to clean up, so it is skipped.
+//
+// This is the correct condition: a planet may be PlanetStatusLost
+// after a lemmings or collection failure but still have a running
+// instance that must be destroyed. Checking InstanceID directly
+// rather than Status avoids incorrectly skipping those planets.
 func (s *Sovereign) destroyTerrain() error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -257,7 +277,7 @@ func (s *Sovereign) destroyTerrain() error {
 
 	for _, planet := range s.planets {
 		planet := planet
-		if planet.Status == PlanetStatusLost && planet.InstanceID == "" {
+		if planet.InstanceID == "" {
 			continue
 		}
 		wg.Add(1)
@@ -346,8 +366,10 @@ func (s *Sovereign) markLost(planet *Planet, kind events.EventKind, err error) e
 }
 
 // saveProviderState writes the current provider state to disk.
-// Errors are logged as warnings -- a state save failure does not
-// abort provisioning since the operation itself may have succeeded.
+// A state save failure is serious but does not abort provisioning
+// since the terraform operation itself may have succeeded. The warning
+// is written to both s.out and os.Stderr so it is never silently
+// discarded even when s.out is set to io.Discard in tests.
 func (s *Sovereign) saveProviderState(planet *Planet, status tfprovider.LifecycleStatus, out *tfprovider.ProvisionOutput) {
 	state := &tfprovider.ProviderState{
 		PlanetID:     planet.ID,
@@ -384,8 +406,12 @@ func (s *Sovereign) saveProviderState(planet *Planet, status tfprovider.Lifecycl
 
 	spec := s.planetSpec(planet)
 	if err := s.provider.SaveState(spec, state); err != nil {
-		fmt.Fprintf(s.out, "  sovereign: warning: failed to save provider state for planet %d: %v\n",
+		msg := fmt.Sprintf("  sovereign: warning: failed to save provider state for planet %d: %v\n",
 			planet.ID, err)
+		fmt.Fprint(s.out, msg)
+		if s.out != os.Stderr {
+			fmt.Fprint(os.Stderr, msg)
+		}
 	}
 }
 

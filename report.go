@@ -3,13 +3,14 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"html/template"
 	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"text/template"
+	texttemplate "text/template"
 	"time"
 
 	"github.com/andreimerlescu/sovereign/pkg/deliverer"
@@ -17,8 +18,7 @@ import (
 )
 
 // PlanetReport holds the aggregated metrics from a single planet's
-// lemmings run. It is populated by reading the lemmings report files
-// collected from the planet during the collection phase.
+// lemmings run.
 type PlanetReport struct {
 	Planet      *Planet
 	TotalVisits int64
@@ -54,8 +54,6 @@ type PlanetPathReport struct {
 }
 
 // UnifiedReport is the aggregated report across all planets.
-// It contains global totals, per-planet breakdowns, and per-path
-// breakdowns aggregated across all planets.
 type UnifiedReport struct {
 	Version     string
 	GeneratedAt time.Time
@@ -64,7 +62,6 @@ type UnifiedReport struct {
 	Planets     []*PlanetReport
 	LostPlanets []*Planet
 
-	// Global aggregates across all planets
 	TotalPlanets int
 	TotalVisits  int64
 	TotalBytes   int64
@@ -75,7 +72,6 @@ type UnifiedReport struct {
 	WaitingRoom  int64
 	Errors       int64
 
-	// Global timing percentiles across all planets and all paths
 	Fastest time.Duration
 	Slowest time.Duration
 	P50     time.Duration
@@ -83,7 +79,6 @@ type UnifiedReport struct {
 	P95     time.Duration
 	P99     time.Duration
 
-	// Per-path breakdown aggregated globally
 	Paths []GlobalPathReport
 }
 
@@ -91,7 +86,7 @@ type UnifiedReport struct {
 type GlobalPathReport struct {
 	URL         string
 	Hits        int64
-	Bytes       int64 // int64 -- formatBytes called at render time only
+	Bytes       int64
 	XX2         int64
 	XX3         int64
 	XX4         int64
@@ -102,9 +97,7 @@ type GlobalPathReport struct {
 	P99         time.Duration
 }
 
-// lemmingsReportFile is the structure of the lemmings YAML report
-// file that sovereign reads from each planet's collected reports.
-// This mirrors the ReportData structure in the lemmings package.
+// lemmingsReportFile is the structure of the lemmings YAML report file.
 type lemmingsReportFile struct {
 	Version     string        `yaml:"Version"`
 	GeneratedAt time.Time     `yaml:"GeneratedAt"`
@@ -186,7 +179,6 @@ func (s *Sovereign) aggregateReport() error {
 			P99:         report.P99,
 		}
 
-		// Accumulate global totals
 		unified.TotalVisits += report.TotalVisits
 		unified.TotalBytes += report.TotalBytes
 		unified.Total2xx += report.Total2xx
@@ -203,11 +195,9 @@ func (s *Sovereign) aggregateReport() error {
 			unified.Slowest = report.Slowest
 		}
 
-		// Collect durations for global percentile recalculation
 		allDurations = append(allDurations,
 			report.P50, report.P90, report.P95, report.P99)
 
-		// Aggregate per-path metrics globally
 		for _, path := range report.Paths {
 			gp, ok := pathMap[path.URL]
 			if !ok {
@@ -247,7 +237,6 @@ func (s *Sovereign) aggregateReport() error {
 		unified.Planets = append(unified.Planets, planetReport)
 	}
 
-	// Compute global percentiles from collected duration samples
 	if len(allDurations) > 0 {
 		sort.Slice(allDurations, func(i, j int) bool {
 			return allDurations[i] < allDurations[j]
@@ -258,7 +247,6 @@ func (s *Sovereign) aggregateReport() error {
 		unified.P99 = percentile(allDurations, 99)
 	}
 
-	// Sort global paths by hit count descending
 	for _, gp := range pathMap {
 		unified.Paths = append(unified.Paths, *gp)
 	}
@@ -266,7 +254,6 @@ func (s *Sovereign) aggregateReport() error {
 		return unified.Paths[i].Hits > unified.Paths[j].Hits
 	})
 
-	// Render and deliver the unified report
 	return s.deliverReport(unified)
 }
 
@@ -278,8 +265,6 @@ func (s *Sovereign) readPlanetReport(planet *Planet) (*lemmingsReportFile, error
 		return nil, fmt.Errorf("planet %d has no report path", planet.ID)
 	}
 
-	// Walk the report directory for a .yml report file.
-	// lemmings writes: lemmings/domain/lemmings.YYYY.MM.DD.domain.yml
 	var reportFile string
 	err := filepath.WalkDir(reportDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -312,8 +297,10 @@ func (s *Sovereign) readPlanetReport(planet *Planet) (*lemmingsReportFile, error
 }
 
 // deliverReport renders the unified report as markdown and HTML and
-// delivers it to all configured save-to destinations via the
-// deliverer package.
+// delivers it to all configured save-to destinations.
+//
+// A delivery failure to one destination is logged as a warning and
+// does not block delivery to the others.
 func (s *Sovereign) deliverReport(unified *UnifiedReport) error {
 	md, err := renderUnifiedMarkdown(unified)
 	if err != nil {
@@ -335,7 +322,9 @@ func (s *Sovereign) deliverReport(unified *UnifiedReport) error {
 		if dest == "" {
 			continue
 		}
-		d, err := deliverer.New(dest, s.cfg.SaveToKey, s.cmd)
+		d, err := deliverer.New(dest, s.cfg.SaveToKey, s.cmd,
+			deliverer.WithFTPCredentials(s.cfg.FTPUsername, s.cfg.FTPPassword),
+		)
 		if err != nil {
 			fmt.Fprintf(s.out, "  sovereign: warning: invalid save-to destination %q: %v\n",
 				dest, err)
@@ -395,9 +384,10 @@ func formatBytes(b int64) string {
 	}
 }
 
-// renderUnifiedMarkdown renders the unified report as a markdown string.
-var unifiedMarkdownTemplate = template.Must(
-	template.New("unified-md").Funcs(template.FuncMap{
+// -- Markdown template -------------------------------------------------------
+
+var unifiedMarkdownTemplate = texttemplate.Must(
+	texttemplate.New("unified-md").Funcs(texttemplate.FuncMap{
 		"formatBytes": formatBytes,
 		"formatInt":   func(n int64) string { return fmt.Sprintf("%d", n) },
 	}).Parse(`
@@ -458,7 +448,7 @@ var unifiedMarkdownTemplate = template.Must(
 ## lost planets
 
 The following planets did not complete successfully and may require
-manual intervention in AWS to verify termination.
+manual intervention to verify termination.
 
 | planet | region | instance id |
 |--------|--------|-------------|
@@ -475,12 +465,20 @@ func renderUnifiedMarkdown(unified *UnifiedReport) (string, error) {
 	return buf.String(), nil
 }
 
-// renderUnifiedHTML renders the unified report as a self-contained
-// HTML string. Styling matches the lemmings HTML report for visual
-// consistency when both reports are opened side by side.
-func renderUnifiedHTML(unified *UnifiedReport) (string, error) {
-	var sb strings.Builder
-	sb.WriteString(`<!DOCTYPE html>
+// -- HTML template -----------------------------------------------------------
+//
+// html/template is used here instead of strings.Builder with raw
+// fmt.Sprintf calls. The template engine automatically escapes all
+// user-controlled values (URLs, region names, instance IDs, error
+// strings) so that content containing <, >, &, or " cannot break
+// the HTML structure or create injection vectors.
+
+var unifiedHTMLTemplate = template.Must(
+	template.New("unified-html").Funcs(template.FuncMap{
+		"formatBytes": formatBytes,
+		"formatInt":   func(n int64) string { return fmt.Sprintf("%d", n) },
+		"roundSec":    func(d time.Duration) string { return d.Round(time.Second).String() },
+	}).Parse(`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -514,102 +512,85 @@ tr:hover td { background:var(--surface); }
   font-size:0.85rem; color:var(--danger); }
 footer { margin-top:3rem; color:var(--muted); font-size:0.8rem;
   border-top:1px solid var(--border); padding-top:1rem; }
+a { color:var(--accent); }
 </style>
 </head>
-<body>`)
+<body>
+<h1>sovereign v{{.Version}} unified report</h1>
+<p class="meta">
+  {{.GeneratedAt.Format "2006-01-02 15:04:05 MST"}}
+  &nbsp;·&nbsp;
+  {{roundSec .Duration}}
+  &nbsp;·&nbsp;
+  <a href="{{.Config.Hit}}">{{.Config.Hit}}</a>
+</p>
 
-	sb.WriteString(fmt.Sprintf(`
-<h1>sovereign v%s unified report</h1>
-<p class="meta">%s &nbsp;·&nbsp; %s &nbsp;·&nbsp;
-<a href="%s" style="color:var(--accent)">%s</a></p>`,
-		unified.Version,
-		unified.GeneratedAt.Format("2006-01-02 15:04:05 MST"),
-		unified.Duration.Round(time.Second),
-		unified.Config.Hit,
-		unified.Config.Hit,
-	))
+<h2>global summary</h2>
+<table>
+  <tr><th>metric</th><th>value</th></tr>
+  <tr><td>total visits</td><td>{{formatInt .TotalVisits}}</td></tr>
+  <tr><td>total bytes</td><td>{{formatBytes .TotalBytes}}</td></tr>
+  <tr><td>waiting room</td><td>{{formatInt .WaitingRoom}} lemmings held</td></tr>
+  <tr><td>errors</td><td>{{formatInt .Errors}}</td></tr>
+</table>
 
-	sb.WriteString(`<h2>global summary</h2>
-<table><tr><th>metric</th><th>value</th></tr>`)
-	sb.WriteString(fmt.Sprintf(
-		`<tr><td>total visits</td><td>%d</td></tr>
-<tr><td>total bytes</td><td>%s</td></tr>
-<tr><td>waiting room</td><td>%d lemmings held</td></tr>
-<tr><td>errors</td><td>%d</td></tr>`,
-		unified.TotalVisits,
-		formatBytes(unified.TotalBytes),
-		unified.WaitingRoom,
-		unified.Errors,
-	))
-	sb.WriteString(`</table>`)
+<h2>global response codes</h2>
+<table>
+  <tr><th>code</th><th>count</th></tr>
+  <tr><td>2xx</td><td>{{formatInt .Total2xx}}</td></tr>
+  <tr><td>3xx</td><td>{{formatInt .Total3xx}}</td></tr>
+  <tr><td>4xx</td><td>{{formatInt .Total4xx}}</td></tr>
+  <tr><td>5xx</td><td>{{formatInt .Total5xx}}</td></tr>
+</table>
 
-	sb.WriteString(`<h2>global response codes</h2>
-<table><tr><th>code</th><th>count</th></tr>`)
-	sb.WriteString(fmt.Sprintf(
-		`<tr><td>2xx</td><td>%d</td></tr>
-<tr><td>3xx</td><td>%d</td></tr>
-<tr><td>4xx</td><td>%d</td></tr>
-<tr><td>5xx</td><td>%d</td></tr>`,
-		unified.Total2xx, unified.Total3xx,
-		unified.Total4xx, unified.Total5xx,
-	))
-	sb.WriteString(`</table>`)
+<h2>global timing</h2>
+<table>
+  <tr><th>percentile</th><th>duration</th></tr>
+  <tr><td>fastest</td><td>{{.Fastest}}</td></tr>
+  <tr><td>p50</td><td>{{.P50}}</td></tr>
+  <tr><td>p90</td><td>{{.P90}}</td></tr>
+  <tr><td>p95</td><td>{{.P95}}</td></tr>
+  <tr><td>p99</td><td>{{.P99}}</td></tr>
+  <tr><td>slowest</td><td>{{.Slowest}}</td></tr>
+</table>
 
-	sb.WriteString(`<h2>global timing</h2>
-<table><tr><th>percentile</th><th>duration</th></tr>`)
-	sb.WriteString(fmt.Sprintf(
-		`<tr><td>fastest</td><td>%s</td></tr>
-<tr><td>p50</td><td>%s</td></tr>
-<tr><td>p90</td><td>%s</td></tr>
-<tr><td>p95</td><td>%s</td></tr>
-<tr><td>p99</td><td>%s</td></tr>
-<tr><td>slowest</td><td>%s</td></tr>`,
-		unified.Fastest, unified.P50, unified.P90,
-		unified.P95, unified.P99, unified.Slowest,
-	))
-	sb.WriteString(`</table>`)
+<h2>per-planet breakdown</h2>
+{{range .Planets}}
+<h3>planet {{.Planet.ID}} &mdash; {{.Planet.Region}} ({{.Planet.PublicIPv4}})</h3>
+<table>
+  <tr><th>metric</th><th>value</th></tr>
+  <tr><td>visits</td><td>{{formatInt .TotalVisits}}</td></tr>
+  <tr><td>bytes</td><td>{{formatBytes .TotalBytes}}</td></tr>
+  <tr><td>2xx</td><td>{{formatInt .Total2xx}}</td></tr>
+  <tr><td>3xx</td><td>{{formatInt .Total3xx}}</td></tr>
+  <tr><td>4xx</td><td>{{formatInt .Total4xx}}</td></tr>
+  <tr><td>5xx</td><td>{{formatInt .Total5xx}}</td></tr>
+  <tr><td>p50</td><td>{{.P50}}</td></tr>
+  <tr><td>p99</td><td>{{.P99}}</td></tr>
+</table>
+{{end}}
 
-	sb.WriteString(`<h2>per-planet breakdown</h2>`)
-	for _, pr := range unified.Planets {
-		sb.WriteString(fmt.Sprintf(
-			`<h3>planet %d &mdash; %s (%s)</h3>
-<table><tr><th>metric</th><th>value</th></tr>
-<tr><td>visits</td><td>%d</td></tr>
-<tr><td>bytes</td><td>%s</td></tr>
-<tr><td>2xx</td><td>%d</td></tr>
-<tr><td>3xx</td><td>%d</td></tr>
-<tr><td>4xx</td><td>%d</td></tr>
-<tr><td>5xx</td><td>%d</td></tr>
-<tr><td>p50</td><td>%s</td></tr>
-<tr><td>p99</td><td>%s</td></tr>
-</table>`,
-			pr.Planet.ID, pr.Planet.Region, pr.Planet.PublicIPv4,
-			pr.TotalVisits, formatBytes(pr.TotalBytes),
-			pr.Total2xx, pr.Total3xx, pr.Total4xx, pr.Total5xx,
-			pr.P50, pr.P99,
-		))
-	}
-
-	if len(unified.LostPlanets) > 0 {
-		sb.WriteString(`<h2>lost planets</h2>
+{{if .LostPlanets}}
+<h2>lost planets</h2>
 <div class="lost">The following planets did not complete successfully
-and may require manual intervention in AWS.</div>
-<table><tr><th>planet</th><th>region</th><th>instance id</th></tr>`)
-		for _, p := range unified.LostPlanets {
-			sb.WriteString(fmt.Sprintf(
-				`<tr><td>%d</td><td>%s</td><td>%s</td></tr>`,
-				p.ID, p.Region, p.InstanceID,
-			))
-		}
-		sb.WriteString(`</table>`)
+and may require manual intervention to verify termination.</div>
+<table>
+  <tr><th>planet</th><th>region</th><th>instance id</th></tr>
+  {{range .LostPlanets}}
+  <tr><td>{{.ID}}</td><td>{{.Region}}</td><td>{{.InstanceID}}</td></tr>
+  {{end}}
+</table>
+{{end}}
+
+<footer>generated by sovereign v{{.Version}} &nbsp;·&nbsp; {{.GeneratedAt.Format "2006-01-02 15:04:05 MST"}}</footer>
+</body>
+</html>
+`))
+
+func renderUnifiedHTML(unified *UnifiedReport) (string, error) {
+	var buf bytes.Buffer
+	if err := unifiedHTMLTemplate.Execute(&buf, unified); err != nil {
+		return "", err
 	}
-
-	sb.WriteString(fmt.Sprintf(
-		`<footer>generated by sovereign v%s &nbsp;·&nbsp; %s</footer>
-</body></html>`,
-		unified.Version,
-		unified.GeneratedAt.Format("2006-01-02 15:04:05 MST"),
-	))
-
-	return sb.String(), nil
+	return buf.String(), nil
 }

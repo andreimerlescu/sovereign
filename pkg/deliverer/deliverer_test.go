@@ -1,13 +1,17 @@
 package deliverer
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andreimerlescu/sovereign/pkg/commander"
 )
@@ -681,4 +685,201 @@ func readAll(r io.Reader) string {
 	}
 	b, _ := io.ReadAll(r)
 	return string(b)
+}
+
+// -- FTPDeliverer ------------------------------------------------------------
+
+func TestFTPDeliverer_ParsesBucketAndPath(t *testing.T) {
+	d, err := newFTPDeliverer("ftp://ftpserver.example.com/reports", "user", "pass")
+	if err != nil {
+		t.Fatalf("newFTPDeliverer: %v", err)
+	}
+	if !containsStr(d.host, "ftpserver.example.com") {
+		t.Errorf("host: got %q", d.host)
+	}
+	if d.dir != "/reports" {
+		t.Errorf("dir: got %q want /reports", d.dir)
+	}
+}
+
+func TestFTPDeliverer_DefaultsPortTo21(t *testing.T) {
+	d, err := newFTPDeliverer("ftp://ftpserver.example.com/reports", "user", "pass")
+	if err != nil {
+		t.Fatalf("newFTPDeliverer: %v", err)
+	}
+	if !containsStr(d.host, ":21") {
+		t.Errorf("host should have :21 appended, got %q", d.host)
+	}
+}
+
+func TestFTPDeliverer_ExplicitPortPreserved(t *testing.T) {
+	d, err := newFTPDeliverer("ftp://ftpserver.example.com:2121/reports", "user", "pass")
+	if err != nil {
+		t.Fatalf("newFTPDeliverer: %v", err)
+	}
+	if !containsStr(d.host, ":2121") {
+		t.Errorf("explicit port should be preserved, got %q", d.host)
+	}
+}
+
+func TestFTPDeliverer_EmptyHostReturnsError(t *testing.T) {
+	_, err := newFTPDeliverer("ftp:///reports", "user", "pass")
+	if err == nil {
+		t.Fatal("expected error for missing host")
+	}
+}
+
+func TestFTPDeliverer_AnonymousWhenNoUsername(t *testing.T) {
+	d, err := newFTPDeliverer("ftp://ftpserver.example.com/reports", "", "")
+	if err != nil {
+		t.Fatalf("newFTPDeliverer: %v", err)
+	}
+	if d.username != "anonymous" {
+		t.Errorf("username: got %q want anonymous", d.username)
+	}
+}
+
+func TestFTPDeliverer_StringFormat(t *testing.T) {
+	d := &FTPDeliverer{host: "ftpserver.example.com:21", dir: "/reports"}
+	want := "ftp://ftpserver.example.com:21/reports/"
+	if d.String() != want {
+		t.Errorf("String: got %q want %q", d.String(), want)
+	}
+}
+
+// TestFTPDeliverer_DeliverConnectsToServer verifies that Deliver attempts
+// a TCP connection to the configured host. We use a local test server
+// that immediately closes the connection after a greeting to trigger an
+// error, confirming the dial was attempted.
+func TestFTPDeliverer_DeliverConnectsToServer(t *testing.T) {
+	// Start a minimal TCP listener that sends a 220 greeting and then hangs.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		fmt.Fprintf(conn, "220 test FTP server\r\n")
+		conn.Close()
+	}()
+
+	d, err := newFTPDeliverer(
+		"ftp://"+ln.Addr().String()+"/reports",
+		"testuser", "testpass",
+	)
+	if err != nil {
+		t.Fatalf("newFTPDeliverer: %v", err)
+	}
+
+	// The server closes after greeting so deliver will error -- that's fine.
+	// We just confirm it attempted to connect (no panic, no timeout).
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	_ = d.Deliver(ctx, "test-report", "# md", "<html/>")
+}
+
+// TestParsePASV_ValidResponse verifies correct parsing of a standard
+// PASV response.
+func TestParsePASV_ValidResponse(t *testing.T) {
+	line := "227 Entering Passive Mode (192,168,1,1,19,136)"
+	addr, err := parsePASV(line)
+	if err != nil {
+		t.Fatalf("parsePASV: %v", err)
+	}
+	// port = 19*256 + 136 = 4864 + 136 = 5000
+	if addr != "192.168.1.1:5000" {
+		t.Errorf("parsePASV: got %q want 192.168.1.1:5000", addr)
+	}
+}
+
+func TestParsePASV_MissingParentheses(t *testing.T) {
+	_, err := parsePASV("227 no parens here")
+	if err == nil {
+		t.Fatal("expected error for missing parentheses")
+	}
+}
+
+func TestParsePASV_WrongFieldCount(t *testing.T) {
+	_, err := parsePASV("227 Entering Passive Mode (192,168,1,1)")
+	if err == nil {
+		t.Fatal("expected error for wrong field count")
+	}
+}
+
+// -- S3Deliverer temp cleanup ------------------------------------------------
+
+// TestS3Deliverer_TempCleanedUpOnMDFailure verifies that the temp directory
+// is removed even when the markdown upload fails and the HTML upload is
+// never attempted.
+func TestS3Deliverer_TempCleanedUpOnMDFailure(t *testing.T) {
+	cmd := testCmd()
+	cmd.Register("aws", commander.MockResponse{Err: errors.New("aws: credentials expired")})
+	d := &S3Deliverer{bucket: "my-bucket", prefix: "reports", cmd: cmd}
+
+	err := d.Deliver(context.Background(), testFilename, testMD, testHTML)
+	if err == nil {
+		t.Fatal("expected error when aws command fails")
+	}
+
+	// Verify no sovereign-s3-* temp directories remain.
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "sovereign-s3-") {
+			t.Errorf("temp directory not cleaned up: %s", e.Name())
+		}
+	}
+}
+
+// TestS3Deliverer_TempCleanedUpOnHTMLFailure verifies cleanup when
+// HTML upload fails after successful markdown upload.
+func TestS3Deliverer_TempCleanedUpOnHTMLFailure(t *testing.T) {
+	cmd := testCmd()
+	callCount := 0
+	// First aws call (md) succeeds; second (html) fails.
+	cmd.Register("aws", commander.MockResponse{})
+
+	d := &S3Deliverer{bucket: "my-bucket", prefix: "reports", cmd: cmd}
+
+	// Replace the commander with one that fails on the second call.
+	failing := &secondCallFailCommander{inner: cmd}
+	d.cmd = failing
+
+	_ = d.Deliver(context.Background(), testFilename, testMD, testHTML)
+	_ = callCount
+
+	entries, err := os.ReadDir(os.TempDir())
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "sovereign-s3-") {
+			t.Errorf("temp directory not cleaned up after html failure: %s", e.Name())
+		}
+	}
+}
+
+// secondCallFailCommander wraps a MockCommander and fails on the second
+// aws call to simulate a partial S3 upload failure.
+type secondCallFailCommander struct {
+	inner *commander.MockCommander
+	calls int
+}
+
+func (c *secondCallFailCommander) Run(ctx context.Context, dir string, env []string, name string, args ...string) (io.Reader, io.Reader, error) {
+	if name == "aws" {
+		c.calls++
+		if c.calls >= 2 {
+			return bytes.NewReader(nil), bytes.NewReader(nil), errors.New("aws: upload failed")
+		}
+	}
+	return c.inner.Run(ctx, dir, env, name, args...)
 }

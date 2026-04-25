@@ -12,8 +12,12 @@ import (
 // it to the state file. The state directory is created with mode
 // 0700 if it does not already exist.
 //
+// Each planet is snapshotted via planetState, which holds the planet
+// mutex for the duration of the read. This prevents a concurrent
+// provisioning goroutine from updating a planet's fields mid-marshal.
+//
 // State is saved after terrain provisioning so that a crash during
-// lemmings execution or result collection does not orphan AWS
+// lemmings execution or result collection does not orphan cloud
 // instances. On restart sovereign reads the state file, finds the
 // existing planet InstanceIDs, and resumes from collection rather
 // than provisioning new instances.
@@ -23,8 +27,16 @@ func (s *Sovereign) saveState() error {
 		return fmt.Errorf("state: mkdir %s: %w", dir, err)
 	}
 
+	// Snapshot each planet under its own mutex to avoid racing with
+	// terrain goroutines that may still be updating Status, PublicIPv4,
+	// or InstanceID at the moment saveState is called.
 	s.mu.Lock()
-	s.state.Planets = s.planets
+	snapshots := make([]*Planet, len(s.planets))
+	for i, p := range s.planets {
+		snap := planetState(p)
+		snapshots[i] = &snap
+	}
+	s.state.Planets = snapshots
 	s.mu.Unlock()
 
 	payload, err := yaml.Marshal(s.state)
@@ -87,23 +99,12 @@ func (s *Sovereign) cleanState() {
 
 // resolveStateFile determines the state file path preferring
 // .sovereignd in the current working directory over ~/.sovereignd.
-//
-// The local path is preferred so that multiple sovereign invocations
-// in different project directories maintain isolated state without
-// interfering with each other.
-//
-// Path resolution order:
-//
-//  1. ./.sovereignd/state.yml  (project-local, preferred)
-//  2. ~/.sovereignd/state.yml  (user-global, fallback)
 func (s *Sovereign) resolveStateFile() (string, error) {
 	localDir := ".sovereignd"
 	if _, err := os.Stat(localDir); err == nil {
 		return filepath.Join(localDir, "state.yml"), nil
 	}
 
-	// Local directory does not exist yet -- check if a local state
-	// file would be appropriate by testing write access to cwd
 	cwd, err := os.Getwd()
 	if err == nil {
 		testPath := filepath.Join(cwd, localDir)
@@ -112,7 +113,6 @@ func (s *Sovereign) resolveStateFile() (string, error) {
 		}
 	}
 
-	// Fall back to home directory
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("state: resolve home dir: %w", err)
@@ -120,10 +120,14 @@ func (s *Sovereign) resolveStateFile() (string, error) {
 	return filepath.Join(home, ".sovereignd", "state.yml"), nil
 }
 
-// planetState returns the current state snapshot of a single planet
-// safe for serialization. The planet mutex is held during the read
-// to prevent a concurrent status update from producing inconsistent
-// state on disk.
+// planetState returns an independent copy of a planet's exported fields
+// safe for serialization. The planet's mutex is held during the copy
+// so concurrent terrain goroutines cannot produce a partially-updated
+// snapshot on disk.
+//
+// This must be the only function that snapshots a planet for state
+// persistence. Callers must never access planet fields for serialization
+// without going through planetState.
 func planetState(planet *Planet) Planet {
 	planet.mu.Lock()
 	defer planet.mu.Unlock()
@@ -141,8 +145,6 @@ func planetState(planet *Planet) Planet {
 }
 
 // lostPlanets returns all planets currently in PlanetStatusLost.
-// Used by the final summary and the report to enumerate instances
-// that may require manual intervention in AWS.
 func (s *Sovereign) lostPlanets() []*Planet {
 	var lost []*Planet
 	for _, p := range s.planets {
@@ -155,7 +157,6 @@ func (s *Sovereign) lostPlanets() []*Planet {
 
 // pendingPlanets returns all planets that have not yet reached
 // a terminal status -- PlanetStatusDone or PlanetStatusLost.
-// Used to determine whether a resumed run has work remaining.
 func (s *Sovereign) pendingPlanets() []*Planet {
 	var pending []*Planet
 	for _, p := range s.planets {
@@ -167,8 +168,7 @@ func (s *Sovereign) pendingPlanets() []*Planet {
 }
 
 // allPlanetsTerminal returns true when every planet has reached
-// either PlanetStatusDone or PlanetStatusLost. Used to determine
-// when sovereign can proceed to terrain destruction.
+// either PlanetStatusDone or PlanetStatusLost.
 func (s *Sovereign) allPlanetsTerminal() bool {
 	for _, p := range s.planets {
 		if p.Status != PlanetStatusDone && p.Status != PlanetStatusLost {

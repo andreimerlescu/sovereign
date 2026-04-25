@@ -3,53 +3,69 @@ package deliverer
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/andreimerlescu/sovereign/pkg/commander"
 )
 
 // ReportDeliverer delivers a rendered sovereign report to a destination.
-// Deliver is called once per save-to destination with the base filename
-// and the fully rendered markdown and HTML content.
 type ReportDeliverer interface {
-	// Deliver writes or uploads the markdown and HTML report files.
-	// filename is the base name without extension, e.g.
-	// "sovereign.2026.04.24.example-com". The deliverer appends
-	// ".md" and ".html" as appropriate for the destination.
 	Deliver(ctx context.Context, filename, md, html string) error
-
-	// String returns a human-readable description of the destination
-	// for use in log output.
 	String() string
 }
 
 // New parses a save-to destination string and returns the appropriate
-// ReportDeliverer. The destination may be:
+// ReportDeliverer. Supported destination formats:
 //
-//	s3://bucket/prefix        -- upload via aws s3 cp
-//	ssh://user@host:/path     -- upload via scp, optionally with identity
-//	file:///path              -- write to local filesystem
-//	/path or ./path or .      -- write to local filesystem
+//	s3://bucket/prefix            upload via aws s3 cp
+//	ssh://user@host:/path         upload via scp
+//	ftp://host/path               upload via FTP
+//	file:///path                  write to local filesystem
+//	/path or ./path or .          write to local filesystem
 //
-// The cmd argument is used for S3 and SSH deliverers. It may be nil
-// for local deliverers.
+// The cmd argument is used by S3 and SSH deliverers for subprocess
+// execution. It may be nil for local and FTP deliverers.
 //
-// The identity argument is the path to an SSH private key used by the
-// SSH deliverer. If empty the SSH deliverer falls back to the default
-// SSH agent or key discovery.
-func New(dest, identity string, cmd commander.Commander) (ReportDeliverer, error) {
+// The identity argument is the SSH private key path for SSHDeliverer.
+// The ftpUsername and ftpPassword arguments are credentials for FTPDeliverer.
+func New(dest, identity string, cmd commander.Commander, opts ...DelivererOption) (ReportDeliverer, error) {
+	o := delivererOptions{}
+	for _, opt := range opts {
+		opt(&o)
+	}
 	switch {
 	case strings.HasPrefix(dest, "s3://"):
 		return newS3Deliverer(dest, cmd)
 	case strings.HasPrefix(dest, "ssh://"):
 		return newSSHDeliverer(dest, identity, cmd)
+	case strings.HasPrefix(dest, "ftp://"):
+		return newFTPDeliverer(dest, o.ftpUsername, o.ftpPassword)
 	case strings.HasPrefix(dest, "file://"):
 		path := strings.TrimPrefix(dest, "file://")
 		return newLocalDeliverer(path)
 	default:
 		return newLocalDeliverer(dest)
+	}
+}
+
+// DelivererOption configures optional deliverer parameters.
+type DelivererOption func(*delivererOptions)
+
+type delivererOptions struct {
+	ftpUsername string
+	ftpPassword string
+}
+
+// WithFTPCredentials sets the username and password for FTP deliverers.
+func WithFTPCredentials(username, password string) DelivererOption {
+	return func(o *delivererOptions) {
+		o.ftpUsername = username
+		o.ftpPassword = password
 	}
 }
 
@@ -95,9 +111,6 @@ func (d *LocalDeliverer) String() string {
 // -- S3Deliverer -------------------------------------------------------------
 
 // S3Deliverer uploads report files to Amazon S3 via the aws CLI.
-// Credentials are never managed by sovereign -- the aws CLI reads them
-// from the subprocess environment, ~/.aws/credentials, or instance
-// metadata as it normally would.
 type S3Deliverer struct {
 	bucket string
 	prefix string
@@ -108,8 +121,6 @@ func newS3Deliverer(dest string, cmd commander.Commander) (*S3Deliverer, error) 
 	if cmd == nil {
 		return nil, fmt.Errorf("deliverer: s3: commander is required")
 	}
-	// dest is s3://bucket/prefix/path
-	// strip the scheme to get bucket/prefix
 	without := strings.TrimPrefix(dest, "s3://")
 	if without == "" {
 		return nil, fmt.Errorf("deliverer: s3: destination %q is missing bucket", dest)
@@ -133,7 +144,6 @@ func newS3Deliverer(dest string, cmd commander.Commander) (*S3Deliverer, error) 
 	}, nil
 }
 
-// s3Key constructs the full S3 key for a given filename and extension.
 func (d *S3Deliverer) s3Key(filename, ext string) string {
 	if d.prefix == "" {
 		return filename + ext
@@ -141,13 +151,13 @@ func (d *S3Deliverer) s3Key(filename, ext string) string {
 	return d.prefix + "/" + filename + ext
 }
 
-// s3URL constructs the full s3:// URL for a given filename and extension.
 func (d *S3Deliverer) s3URL(filename, ext string) string {
 	return "s3://" + d.bucket + "/" + d.s3Key(filename, ext)
 }
 
 // Deliver uploads filename.md and filename.html to S3 via aws s3 cp.
-// The files are written to a temp directory first then uploaded.
+// On failure the temp directory is always cleaned up -- the defer runs
+// regardless of which upload failed.
 func (d *S3Deliverer) Deliver(ctx context.Context, filename, md, html string) error {
 	tmp, err := os.MkdirTemp("", "sovereign-s3-*")
 	if err != nil {
@@ -165,7 +175,6 @@ func (d *S3Deliverer) Deliver(ctx context.Context, filename, md, html string) er
 		return fmt.Errorf("deliverer: s3: write temp html: %w", err)
 	}
 
-	// upload markdown
 	_, _, err = d.cmd.Run(ctx, "", nil,
 		"aws", "s3", "cp",
 		mdPath,
@@ -177,7 +186,6 @@ func (d *S3Deliverer) Deliver(ctx context.Context, filename, md, html string) er
 			d.s3URL(filename, ".md"), err)
 	}
 
-	// upload html
 	_, _, err = d.cmd.Run(ctx, "", nil,
 		"aws", "s3", "cp",
 		htmlPath,
@@ -192,7 +200,6 @@ func (d *S3Deliverer) Deliver(ctx context.Context, filename, md, html string) er
 	return nil
 }
 
-// String returns the S3 destination as a human-readable string.
 func (d *S3Deliverer) String() string {
 	if d.prefix == "" {
 		return "s3://" + d.bucket + "/"
@@ -203,8 +210,6 @@ func (d *S3Deliverer) String() string {
 // -- SSHDeliverer ------------------------------------------------------------
 
 // SSHDeliverer uploads report files to a remote host via scp.
-// The destination is parsed from an ssh://user@host:/path URL.
-// If identity is non-empty it is passed as the -i flag to scp.
 type SSHDeliverer struct {
 	user     string
 	host     string
@@ -218,14 +223,11 @@ func newSSHDeliverer(dest, identity string, cmd commander.Commander) (*SSHDelive
 		return nil, fmt.Errorf("deliverer: ssh: commander is required")
 	}
 
-	// dest is ssh://user@host:/path/to/dir
 	without := strings.TrimPrefix(dest, "ssh://")
 	if without == "" {
 		return nil, fmt.Errorf("deliverer: ssh: destination %q is missing host", dest)
 	}
 
-	// split user@host from :/path
-	// the colon separates host from remote path, matching scp convention
 	colonIdx := strings.Index(without, ":")
 	if colonIdx < 0 {
 		return nil, fmt.Errorf("deliverer: ssh: destination %q missing colon separator between host and path", dest)
@@ -238,7 +240,6 @@ func newSSHDeliverer(dest, identity string, cmd commander.Commander) (*SSHDelive
 		return nil, fmt.Errorf("deliverer: ssh: destination %q missing remote path", dest)
 	}
 
-	// split user@host
 	atIdx := strings.Index(userHost, "@")
 	if atIdx < 0 {
 		return nil, fmt.Errorf("deliverer: ssh: destination %q missing user -- use ssh://user@host:/path", dest)
@@ -263,8 +264,6 @@ func newSSHDeliverer(dest, identity string, cmd commander.Commander) (*SSHDelive
 	}, nil
 }
 
-// scpArgs builds the scp argument list for a single file upload.
-// If identity is set it is passed as -i.
 func (d *SSHDeliverer) scpArgs(localPath, remoteDir, filename, ext string) []string {
 	args := []string{"scp", "-o", "StrictHostKeyChecking=no"}
 	if d.identity != "" {
@@ -278,7 +277,7 @@ func (d *SSHDeliverer) scpArgs(localPath, remoteDir, filename, ext string) []str
 }
 
 // Deliver uploads filename.md and filename.html to the remote host
-// via scp. Files are written to a temp directory first then uploaded.
+// via scp. The temp directory is always removed on return.
 func (d *SSHDeliverer) Deliver(ctx context.Context, filename, md, html string) error {
 	tmp, err := os.MkdirTemp("", "sovereign-ssh-*")
 	if err != nil {
@@ -296,7 +295,6 @@ func (d *SSHDeliverer) Deliver(ctx context.Context, filename, md, html string) e
 		return fmt.Errorf("deliverer: ssh: write temp html: %w", err)
 	}
 
-	// upload markdown
 	mdArgs := d.scpArgs(mdPath, d.dir, filename, ".md")
 	_, _, err = d.cmd.Run(ctx, "", nil, mdArgs[0], mdArgs[1:]...)
 	if err != nil {
@@ -304,7 +302,6 @@ func (d *SSHDeliverer) Deliver(ctx context.Context, filename, md, html string) e
 			d.user, d.host, d.dir, err)
 	}
 
-	// upload html
 	htmlArgs := d.scpArgs(htmlPath, d.dir, filename, ".html")
 	_, _, err = d.cmd.Run(ctx, "", nil, htmlArgs[0], htmlArgs[1:]...)
 	if err != nil {
@@ -315,7 +312,203 @@ func (d *SSHDeliverer) Deliver(ctx context.Context, filename, md, html string) e
 	return nil
 }
 
-// String returns the SSH destination as a human-readable string.
 func (d *SSHDeliverer) String() string {
 	return fmt.Sprintf("ssh://%s@%s:%s/", d.user, d.host, d.dir)
+}
+
+// -- FTPDeliverer ------------------------------------------------------------
+
+// FTPDeliverer uploads report files to a remote host via FTP using
+// the standard net package. No external dependency is required.
+//
+// The FTP connection is established per Deliver call and closed on return.
+// Passive mode is used by default for compatibility with most firewalls.
+//
+// Credentials are passed at construction time and never logged.
+type FTPDeliverer struct {
+	host     string
+	dir      string
+	username string
+	password string
+}
+
+func newFTPDeliverer(dest, username, password string) (*FTPDeliverer, error) {
+	without := strings.TrimPrefix(dest, "ftp://")
+	if without == "" {
+		return nil, fmt.Errorf("deliverer: ftp: destination %q is missing host", dest)
+	}
+
+	// Parse host and path: ftp://host/path or ftp://host:21/path
+	slashIdx := strings.Index(without, "/")
+	host := without
+	dir := "/"
+	if slashIdx >= 0 {
+		host = without[:slashIdx]
+		dir = without[slashIdx:]
+	}
+	if dir == "" {
+		dir = "/"
+	}
+
+	if host == "" {
+		return nil, fmt.Errorf("deliverer: ftp: destination %q is missing host", dest)
+	}
+
+	// Ensure the host has a port; default to 21.
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		host = net.JoinHostPort(host, "21")
+	}
+
+	if username == "" {
+		username = "anonymous"
+	}
+
+	return &FTPDeliverer{
+		host:     host,
+		dir:      strings.TrimSuffix(dir, "/"),
+		username: username,
+		password: password,
+	}, nil
+}
+
+// Deliver connects to the FTP server and uploads filename.md and
+// filename.html using the raw FTP protocol via net.Conn.
+//
+// The implementation uses a minimal subset of RFC 959: USER, PASS,
+// PASV, STOR, and QUIT. It does not depend on any external FTP library.
+func (d *FTPDeliverer) Deliver(ctx context.Context, filename, md, html string) error {
+	if err := d.upload(ctx, filename+".md", []byte(md)); err != nil {
+		return fmt.Errorf("deliverer: ftp: upload md: %w", err)
+	}
+	if err := d.upload(ctx, filename+".html", []byte(html)); err != nil {
+		return fmt.Errorf("deliverer: ftp: upload html: %w", err)
+	}
+	return nil
+}
+
+// upload opens an FTP control connection, authenticates, enters passive
+// mode, and transfers a single file. The connection is closed on return.
+func (d *FTPDeliverer) upload(ctx context.Context, name string, data []byte) error {
+	dialer := &net.Dialer{}
+	ctrl, err := dialer.DialContext(ctx, "tcp", d.host)
+	if err != nil {
+		return fmt.Errorf("connect %s: %w", d.host, err)
+	}
+	defer ctrl.Close()
+
+	// Set a generous deadline for the overall operation.
+	_ = ctrl.SetDeadline(time.Now().Add(60 * time.Second))
+
+	send := func(cmd string) error {
+		_, err := fmt.Fprintf(ctrl, "%s\r\n", cmd)
+		return err
+	}
+	recv := func() (string, error) {
+		buf := make([]byte, 1024)
+		n, err := ctrl.Read(buf)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(buf[:n])), nil
+	}
+	expect := func(prefix string) error {
+		line, err := recv()
+		if err != nil {
+			return err
+		}
+		if !strings.HasPrefix(line, prefix) {
+			return fmt.Errorf("ftp: unexpected response %q (want %s...)", line, prefix)
+		}
+		return nil
+	}
+
+	// greeting
+	if err := expect("220"); err != nil {
+		return err
+	}
+	// auth
+	if err := send("USER " + d.username); err != nil {
+		return err
+	}
+	if err := expect("331"); err != nil {
+		return err
+	}
+	if err := send("PASS " + d.password); err != nil {
+		return err
+	}
+	if err := expect("230"); err != nil {
+		return err
+	}
+	// binary mode
+	if err := send("TYPE I"); err != nil {
+		return err
+	}
+	if err := expect("200"); err != nil {
+		return err
+	}
+	// passive mode
+	if err := send("PASV"); err != nil {
+		return err
+	}
+	pasvLine, err := recv()
+	if err != nil {
+		return err
+	}
+	dataAddr, err := parsePASV(pasvLine)
+	if err != nil {
+		return fmt.Errorf("ftp: parse PASV: %w", err)
+	}
+
+	// open data connection
+	dataConn, err := dialer.DialContext(ctx, "tcp", dataAddr)
+	if err != nil {
+		return fmt.Errorf("ftp: open data connection %s: %w", dataAddr, err)
+	}
+
+	remotePath := d.dir + "/" + name
+	if err := send("STOR " + remotePath); err != nil {
+		dataConn.Close()
+		return err
+	}
+	if err := expect("150"); err != nil {
+		dataConn.Close()
+		return err
+	}
+
+	if _, err := io.Copy(dataConn, strings.NewReader(string(data))); err != nil {
+		dataConn.Close()
+		return fmt.Errorf("ftp: write data: %w", err)
+	}
+	dataConn.Close()
+
+	if err := expect("226"); err != nil {
+		return err
+	}
+
+	_ = send("QUIT")
+	return nil
+}
+
+// parsePASV parses the address from an FTP 227 PASV response.
+// The response format is: 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)
+func parsePASV(line string) (string, error) {
+	start := strings.Index(line, "(")
+	end := strings.LastIndex(line, ")")
+	if start < 0 || end < 0 || end <= start {
+		return "", fmt.Errorf("cannot find parentheses in %q", line)
+	}
+	parts := strings.Split(line[start+1:end], ",")
+	if len(parts) != 6 {
+		return "", fmt.Errorf("expected 6 comma-separated values, got %d", len(parts))
+	}
+	ip := strings.Join(parts[:4], ".")
+	p1, p2 := 0, 0
+	fmt.Sscanf(parts[4], "%d", &p1)
+	fmt.Sscanf(parts[5], "%d", &p2)
+	port := p1*256 + p2
+	return net.JoinHostPort(ip, fmt.Sprintf("%d", port)), nil
+}
+
+func (d *FTPDeliverer) String() string {
+	return fmt.Sprintf("ftp://%s%s/", d.host, d.dir)
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -24,6 +25,17 @@ type SovereignConfigFile struct {
 	SaveTo  []string `yaml:"SaveTo"`
 	// SaveToKey is the SSH private key path for ssh:// save-to destinations.
 	SaveToKey string `yaml:"SaveToKey"`
+
+	// SSHOptions are extra OpenSSH -o options appended to every SSH/SCP
+	// call sovereign makes. Each entry is a single option string such as
+	// "UserKnownHostsFile=/path/to/known_hosts". The built-in defaults
+	// (StrictHostKeyChecking=no, ConnectTimeout=30) are always present
+	// before these options.
+	SSHOptions []string `yaml:"SSHOptions"`
+
+	// FTP save-to credentials
+	FTPUsername string `yaml:"FTPUsername"`
+	FTPPassword string `yaml:"FTPPassword"`
 
 	// Infrastructure
 	Provider         string   `yaml:"Provider"`
@@ -88,17 +100,8 @@ func loadConfigFile(path string, cfg *SovereignConfig) error {
 }
 
 // mergeConfigFile applies values from file into cfg only when the
-// corresponding cfg field is still at its zero value. This ensures
-// that any value explicitly set by a flag (even if it matches a
-// default) is never overwritten by the config file.
-//
-// Exception: bool flags (Yes, DryRun) and numeric flags (Planets,
-// Terrain, Pack, RootVolumeSize, TempVolumeSize) use zero-value
-// checks directly since false/0 unambiguously means "not set via flag"
-// in this context. Duration fields compare against zero because zero
-// duration means "not set".
+// corresponding cfg field is still at its zero value.
 func mergeConfigFile(file *SovereignConfigFile, cfg *SovereignConfig) error {
-	// String fields: only merge when cfg field is empty string.
 	if cfg.Hit == "" && file.Hit != "" {
 		cfg.Hit = file.Hit
 	}
@@ -135,16 +138,21 @@ func mergeConfigFile(file *SovereignConfigFile, cfg *SovereignConfig) error {
 	if cfg.SaveToKey == "" && file.SaveToKey != "" {
 		cfg.SaveToKey = file.SaveToKey
 	}
-
-	// Slice fields
+	if cfg.FTPUsername == "" && file.FTPUsername != "" {
+		cfg.FTPUsername = file.FTPUsername
+	}
+	if cfg.FTPPassword == "" && file.FTPPassword != "" {
+		cfg.FTPPassword = file.FTPPassword
+	}
+	if len(cfg.SSHOptions) == 0 && len(file.SSHOptions) > 0 {
+		cfg.SSHOptions = file.SSHOptions
+	}
 	if len(cfg.Regions) == 0 && len(file.Regions) > 0 {
 		cfg.Regions = file.Regions
 	}
 	if len(cfg.SaveTo) == 0 && len(file.SaveTo) > 0 {
 		cfg.SaveTo = file.SaveTo
 	}
-
-	// Numeric fields: merge when zero.
 	if cfg.Planets == 0 && file.Planets > 0 {
 		cfg.Planets = file.Planets
 	}
@@ -160,16 +168,12 @@ func mergeConfigFile(file *SovereignConfigFile, cfg *SovereignConfig) error {
 	if cfg.TempVolumeSize == 0 && file.TempVolumeSize > 0 {
 		cfg.TempVolumeSize = file.TempVolumeSize
 	}
-
-	// Bool fields: only set true, never override true with false.
 	if !cfg.Yes && file.Yes {
 		cfg.Yes = file.Yes
 	}
 	if !cfg.DryRun && file.DryRun {
 		cfg.DryRun = file.DryRun
 	}
-
-	// Duration fields: merge when zero.
 	if cfg.Until == 0 && file.Until != "" {
 		d, err := time.ParseDuration(strings.TrimSpace(file.Until))
 		if err != nil {
@@ -207,13 +211,20 @@ func mergeConfigFile(file *SovereignConfigFile, cfg *SovereignConfig) error {
 // validateConfig checks that the final merged SovereignConfig is
 // coherent before NewSovereign is called.
 func validateConfig(cfg *SovereignConfig) error {
-	// Core
 	if cfg.Hit == "" {
 		return fmt.Errorf("sovereign: --hit is required")
 	}
-	if !strings.HasPrefix(cfg.Hit, "http") {
-		return fmt.Errorf("sovereign: --hit must begin with http or https, got %q",
-			cfg.Hit)
+	// Parse the URL and verify it uses http or https. A bare prefix check
+	// allows schemes like "httpevil://" to pass; parsing catches those.
+	u, err := url.Parse(cfg.Hit)
+	if err != nil {
+		return fmt.Errorf("sovereign: --hit is not a valid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("sovereign: --hit must use http or https scheme, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("sovereign: --hit must include a host, got %q", cfg.Hit)
 	}
 	if cfg.Planets < 1 {
 		return fmt.Errorf("sovereign: --planets must be at least 1, got %d",
@@ -242,9 +253,10 @@ func validateConfig(cfg *SovereignConfig) error {
 		if strings.TrimSpace(dest) == "" {
 			return fmt.Errorf("sovereign: save-to contains empty destination")
 		}
+		if err := validateSaveToDestination(dest); err != nil {
+			return err
+		}
 	}
-
-	// Infrastructure
 	if cfg.ProvisionTimeout <= 0 {
 		return fmt.Errorf("sovereign: --provision-timeout must be greater than zero")
 	}
@@ -254,29 +266,21 @@ func validateConfig(cfg *SovereignConfig) error {
 	if cfg.InstanceType == "" {
 		return fmt.Errorf("sovereign: --instance is required (e.g. t3.medium, c6a.large)")
 	}
-
-	// Remote instance
 	if cfg.RemoteUser == "" {
 		return fmt.Errorf("sovereign: --remote-user must not be empty")
 	}
-
-	// AMI
 	if cfg.AMIOS == "" {
 		return fmt.Errorf("sovereign: --ami-os must not be empty")
 	}
 	if cfg.AMIOwners == "" {
 		return fmt.Errorf("sovereign: --ami-owners must not be empty")
 	}
-
-	// Go and lemmings
 	if cfg.GoVersion == "" {
 		return fmt.Errorf("sovereign: --go-version must not be empty")
 	}
 	if cfg.LemmingsPackage == "" {
 		return fmt.Errorf("sovereign: --lemmings-package must not be empty")
 	}
-
-	// EBS volumes
 	if cfg.RootVolumeSize <= 0 {
 		return fmt.Errorf("sovereign: --root-volume-size must be greater than zero")
 	}
@@ -292,6 +296,25 @@ func validateConfig(cfg *SovereignConfig) error {
 			cfg.TempVolumeType)
 	}
 
+	return nil
+}
+
+// validateSaveToDestination returns an error if dest uses an unsupported
+// URL scheme. Supported schemes: http, https, s3, ssh, ftp, file, and
+// bare filesystem paths (relative or absolute).
+func validateSaveToDestination(dest string) error {
+	dest = strings.TrimSpace(dest)
+	supported := []string{"s3://", "ssh://", "ftp://", "file://", "http://", "https://"}
+	for _, prefix := range supported {
+		if strings.HasPrefix(dest, prefix) {
+			return nil
+		}
+	}
+	// bare path -- must not look like an unknown scheme
+	if strings.Contains(dest, "://") {
+		scheme := strings.SplitN(dest, "://", 2)[0]
+		return fmt.Errorf("sovereign: save-to destination %q uses unsupported scheme %q -- supported: s3, ssh, ftp, file, or a filesystem path", dest, scheme)
+	}
 	return nil
 }
 
@@ -333,11 +356,22 @@ TempVolumeType: gp2
 ProvisionTimeout: 5m
 TerminateTimeout: 5m
 
+# SSHOptions are extra -o flags appended to every ssh/scp call.
+# The defaults (StrictHostKeyChecking=no, ConnectTimeout=30) are
+# always present. Add options here to customize host key verification
+# or connection behaviour without modifying sovereign's source.
+SSHOptions: []
+
 SaveTo:
   - .
   - s3://my-bucket/sovereign-reports
   - ssh://rocky@myserver.com:/reports
+  - ftp://ftpserver.example.com:/reports
 
 SaveToKey: /home/rocky/.ssh/my-key.pem
+
+# FTP credentials for ftp:// save-to destinations.
+FTPUsername: ftpuser
+FTPPassword: ""
 `
 }
