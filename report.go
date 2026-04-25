@@ -148,7 +148,7 @@ func (s *Sovereign) aggregateReport() error {
 	}
 
 	unified := &UnifiedReport{
-		Version:      version,
+		Version:      Version(),
 		GeneratedAt:  time.Now(),
 		Duration:     time.Since(s.startedAt),
 		Config:       s.cfg,

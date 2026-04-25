@@ -23,7 +23,7 @@ indifferent to which cloud is on the other side.
 
 ## Package Layout
 
-    pkg/terraform_provider/
+    pkg/terraform/provider/
     |-- provider.go          TerraformProvider interface, PlanetSpec, HCLSpec,
     |                        ProvisionOutput, LifecycleStatus, ProviderState, HCLBackup
     |
@@ -33,16 +33,10 @@ indifferent to which cloud is on the other side.
     |   `-- auth.go          AWS credential resolution from environment
     |
     |-- do/
-    |   `-- provider.go      TerraformProviderDigitalOcean -- stub, not yet implemented
-    |
-    |-- gcp/
-    |   `-- provider.go      TerraformProviderGCP -- stub, not yet implemented
-    |
-    |-- oci/
-    |   `-- provider.go      TerraformProviderOCI -- stub, not yet implemented
+    |   `-- provider.go      TerraformProviderDigitalOcean  -- full implementation
     |
     `-- ovh/
-        `-- provider.go      TerraformProviderOVH -- stub, not yet implemented
+        `-- provider.go      TerraformProviderOVH  -- full implementation
 
 ---
 

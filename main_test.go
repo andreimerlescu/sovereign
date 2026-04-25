@@ -19,7 +19,7 @@ import (
 // -- Constants ----------------------------------------------------------------
 
 const (
-	// testVersion is the sovereign version used in tests.
+	// testVersion is the sovereign Version() used in tests.
 	testVersion = "test"
 
 	// testHit is the default target URL used in tests.

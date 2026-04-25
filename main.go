@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -45,9 +47,14 @@ const (
 	defaultRootVolumeType string = "gp2"
 	defaultTempVolumeSize int    = 10
 	defaultTempVolumeType string = "gp2"
-
-	version = "0.0.1"
 )
+
+//go:embed VERSION
+var versionBytes []byte // same as englishBytes pattern above
+
+func Version() string {
+	return strings.TrimSpace(string(versionBytes))
+}
 
 func main() {
 	ctx, cancel := signal.NotifyContext(
@@ -171,6 +178,8 @@ func main() {
 	figs.NewString("config", "", "Path to a sovereign YAML config file").
 		WithAlias("config", "c")
 
+	figs.NewBool("version", false, "Show version").WithAlias("version", "v")
+
 	// -- Validate and load ---------------------------------------------------
 
 	if problems := figs.Problems(); len(problems) > 0 {
@@ -182,6 +191,11 @@ func main() {
 
 	if err := figs.Load(); err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
+	}
+
+	if *figs.Bool("version") {
+		fmt.Printf("sovereign %s\n", Version())
+		os.Exit(0)
 	}
 
 	cfg := SovereignConfig{
@@ -224,7 +238,7 @@ func main() {
 
 		// Config file
 		ConfigFile: *figs.String("config"),
-		Version:    version,
+		Version:    Version(),
 	}
 
 	// load config file if provided -- flags take precedence

@@ -1,4 +1,4 @@
-# terraform_exeggutor
+# Terraform Exeggutor
 
 > Shared terraform subprocess execution for sovereign providers.
 > One place for init, apply, destroy, output parsing, and status
@@ -14,7 +14,7 @@ working directory. Before this package existed, those operations were
 duplicated byte-for-byte in aws/provider.go, do/provider.go, and
 ovh/provider.go.
 
-terraform_exeggutor eliminates that duplication. Each provider
+Exeggutor eliminates that duplication. Each provider
 constructs an Exeggutor per operation, delegates to it, and discards
 it. The provider retains only what is unique to it -- credentials,
 HCL templates, and the resource type name passed to ParseStatus.
