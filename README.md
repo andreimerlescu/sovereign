@@ -9,6 +9,8 @@
 [![Go Version](https://img.shields.io/badge/go-1.26.2-blue)](https://go.dev/doc/go1.26)
 [![Release](https://img.shields.io/github/v/release/andreimerlescu/sovereign)](https://github.com/andreimerlescu/sovereign/releases)
 
+![Unique](https://counthis.app/github?repository=andreimerlescu/sovereign&label=Unique) ![Visitors](https://counthis.app/g/qyjy5vwjtjgbjfzy)
+
 ---
 
 ## What Sovereign Is
